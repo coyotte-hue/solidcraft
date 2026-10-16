@@ -5,6 +5,10 @@
 <h1 align="center">SolidCraft</h1>
 
 <p align="center">
+  <strong>English</strong> · <a href="README.fr.md">Français</a>
+</p>
+
+<p align="center">
   <strong>An open-source parametric 3D CAD application built in pure Rust.</strong><br />
   Sketch, constrain, and build solids with a parametric feature timeline. Change a dimension
   and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
