@@ -195,7 +195,7 @@ fn vertical_marker(app: &mut SolveApp, ui: &mut egui::Ui, drag: &mut Option<Drag
     let t = Tokens::get();
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 7.0), Sense::drag());
     let line = Rect::from_min_max(pos2(rect.left() + 8.0, rect.center().y - 1.5), pos2(rect.right() - 5.0, rect.center().y + 1.5));
-    let colour = t.accent;
+    let colour = crate::theme::TabAccent::for_tab(&t, &app.ui.tab).color;
     ui.painter().rect_filled(line, 1.5, colour);
     ui.painter().circle_filled(pos2(line.right(), line.center().y), 4.0, colour);
     crate::scenario::publish_handle("timeline:rollback", rect.center());
@@ -223,6 +223,7 @@ fn drag_x(items: &DragItems, pointer_x: f32) -> f32 {
 }
 
 fn select_only(app: &mut SolveApp, item: TimelineItem) {
+    app.tree.picked_joints.clear();
     match item {
         TimelineItem::Group(id) => {
             app.tree.picked_timeline_groups.clear();
@@ -239,6 +240,9 @@ fn select_only(app: &mut SolveApp, item: TimelineItem) {
 
 fn select_item(app: &mut SolveApp, ui: &egui::Ui, item: TimelineItem, order: &[TimelineItem]) {
     let modifiers = ui.input(|input| input.modifiers);
+    if !modifiers.command && !modifiers.ctrl {
+        app.tree.picked_joints.clear();
+    }
     if modifiers.shift
         && let Some(anchor) = app.tree.timeline_anchor.as_deref()
         && let (Some(from), Some(to)) = (order.iter().position(|entry| entry.key() == anchor), order.iter().position(|entry| *entry == item))
@@ -558,7 +562,7 @@ fn vertical_group_row(
     drop_zones.push((rect, group.id));
     slots.push(VerticalSlot { y: rect.bottom(), position: if open { position } else { end_position }, group: Some(group.id), indent_group: None });
     if selected || response.hovered() {
-        ui.painter().rect_filled(rect, 3.0, if selected { t.accent_soft } else { t.hover });
+        ui.painter().rect_filled(rect, 3.0, if selected { crate::theme::TabAccent::current(ui.ctx()).soft } else { t.hover });
     }
     let offset = depth as f32 * 14.0;
     let centre = pos2(rect.left() + 9.0 + offset, rect.center().y);
@@ -704,7 +708,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui) {
         let background = if error.is_some() {
             t.timeline_item_error
         } else if selected {
-            t.accent_soft
+            crate::theme::TabAccent::current(ui.ctx()).soft
         } else if response.hovered() || from_view == Some(*id) {
             t.hover
         } else {
@@ -814,7 +818,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
         if has_patterns && patterns_open {
             let depth = group_id.map_or(1, |group| group_depth(&groups, group) + 2);
-            crate::sketch_pattern_tree::rows(app, ui, *id, depth, "timeline", None);
+            crate::sketch_pattern_tree::rows(app, ui, *id, depth, "timeline", None, false);
         }
         previous_visible_group = group_id;
     }
@@ -864,7 +868,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui) {
             let left = vertical_drop_bar_left(ui.min_rect().left(), folder_target, &groups);
             ui.painter().line_segment(
                 [pos2(left, slot.y), pos2(ui.max_rect().right() - 5.0, slot.y)],
-                Stroke::new(2.0, if matches!(active, Drag::Marker) { t.accent } else { t.sketch_accent }),
+                Stroke::new(2.0, if matches!(active, Drag::Marker) { crate::theme::TabAccent::current(ui.ctx()).color } else { t.sketch_accent }),
             );
         }
     }
@@ -955,6 +959,38 @@ mod tests {
         harness.step(&json!({"click": {"handle": "left-browser-toggle"}})).unwrap();
         assert!(!harness.app.preferences.timeline_left_browser_collapsed);
         assert!(handle_at("row:Untitled").is_some(), "expanding the browser should restore its rows");
+    }
+
+    #[test]
+    fn browser_sidebar_drags_wider_and_narrower() {
+        let mut harness = Harness::new();
+        harness.frames(4);
+        let before = harness.app.preferences.browser_width;
+        let rail = handle_at("left-browser-rail").expect("the browser sidebar's right edge is drawn");
+        harness.step(&json!({"drag": [[rail.x, rail.y], [rail.x + 90.0, rail.y]]})).unwrap();
+        let wider = harness.app.preferences.browser_width;
+        assert!(wider > before + 40.0, "dragging the right edge right should widen the browser: {before} -> {wider}");
+
+        let rail = handle_at("left-browser-rail").expect("the browser sidebar's right edge is drawn");
+        harness.step(&json!({"drag": [[rail.x, rail.y], [rail.x - 40.0, rail.y]]})).unwrap();
+        let narrower = harness.app.preferences.browser_width;
+        assert!(narrower < wider - 20.0, "dragging it left should narrow it again: {wider} -> {narrower}");
+    }
+
+    #[test]
+    fn floating_browser_sits_over_the_workspace_and_docks_again() {
+        let mut harness = Harness::new();
+        harness.app.preferences.browser_float = true;
+        harness.frames(4);
+        let card = crate::scenario::rect_of("browser:float").expect("the floating browser is drawn");
+        assert!(card.min.x < 40.0, "the card sits at the view's left edge: {card:?}");
+        assert!(handle_at("left-browser-rail").is_none(), "a floating browser must not take a column of the window");
+        assert!(handle_at("row:Untitled").is_some(), "the tree is still drawn and usable");
+
+        harness.app.preferences.browser_float = false;
+        harness.frames(4);
+        assert!(crate::scenario::rect_of("browser:float").is_none(), "docking again removes the card");
+        assert!(handle_at("left-browser-rail").is_some(), "the docked sidebar is back");
     }
 
     #[test]
