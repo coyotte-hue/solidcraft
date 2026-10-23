@@ -29,6 +29,9 @@ pub struct ParamsDialog {
     pub comments: std::collections::BTreeMap<String, String>,
     /// A parameter being renamed: (old name, new name).
     pub renaming: Option<(String, String)>,
+    /// The table the rename was started in. A favourite is listed twice (Favourites and User),
+    /// and two editors on one name took each other's focus, so the rename closed at once (#4952).
+    pub rename_table: String,
     pub new_name: String,
     pub adding: bool,
     pub focus_new: bool,
@@ -140,7 +143,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let Some(mut d) = app.params.take() else { return };
     ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    let viewport = crate::shell::content_rect(app, app.viewport.rect.unwrap_or_else(|| ctx.content_rect()));
+    let viewport = crate::agent_chat::tool_space(app, crate::shell::content_rect(app, app.viewport.rect.unwrap_or_else(|| ctx.content_rect())));
     if !viewport.is_finite() || !viewport.is_positive() {
         app.params = Some(d);
         return;
@@ -151,12 +154,19 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let top = crate::shell::panel_top(app, viewport, viewport.bottom(), side);
     let docked = egui::pos2(side.anchor_x(viewport), top);
     let moved = crate::frame::dock_offset(ctx, "PARAMETERS");
-    let anchor = crate::frame::offset_anchor(docked, moved, viewport, side);
+    let drag_bounds = crate::shell::tool_drag_rect(app, viewport);
+    let anchor = crate::frame::offset_anchor(docked, moved, drag_bounds, side);
     let title = crate::i18n::tr_label("Parameters");
-    let panel =
-        ui_kit::Panel::new(title, egui::Id::new("sc_params_dialog"), anchor, viewport, side, ui_kit::Panel::feature_frame(ctx, app.ui.layout, side))
-            .wide()
-            .reset_scroll(d.reset_scroll);
+    let panel = ui_kit::Panel::new(
+        title,
+        egui::Id::new("sc_params_dialog"),
+        anchor,
+        drag_bounds,
+        side,
+        ui_kit::Panel::feature_frame(ctx, app.ui.layout, side),
+    )
+    .wide()
+    .reset_scroll(d.reset_scroll);
     let panel = if side == crate::frame::Side::Left {
         let available = palette.map_or(viewport.width(), |r| (r.left() - viewport.left() - crate::theme::Tokens::get().space_8).max(0.0));
         panel.width((crate::theme::Tokens::get().form_card_width * 3.0).min(available))
@@ -172,7 +182,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         rows
     };
     let mut close = false;
-    panel.window().show(ctx, |ui| {
+    panel.window(ctx).show(ctx, |ui| {
         let (closed, action) = panel.feature(
             ui,
             ui_kit::FeatureOptions {
@@ -332,9 +342,10 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
                         }
                     }
                 });
+                let renaming_here = d.rename_table == salt;
                 row.cell(|ui| match &mut d.renaming {
-                    Some((old, new)) if *old == r.name => {
-                        let id = ui.make_persistent_id(("rename", &r.name));
+                    Some((old, new)) if *old == r.name && renaming_here => {
+                        let id = ui.make_persistent_id(("rename", salt, &r.name));
                         let focused = ui.memory(|m| m.has_focus(id) || m.had_focus_last_frame(id));
                         let response = ui_kit::cell_editor(ui, id, new, "Name", false);
                         let entered = enter_for(ui, focused);
@@ -354,6 +365,7 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
                         crate::scenario::publish_handle(&format!("param:name:{}", r.name), response.rect.center());
                         if response.double_clicked() {
                             d.renaming = Some((r.name.clone(), r.name.clone()));
+                            d.rename_table = salt.to_string();
                         }
                     }
                 });

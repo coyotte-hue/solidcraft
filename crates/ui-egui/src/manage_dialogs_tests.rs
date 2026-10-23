@@ -330,6 +330,16 @@ fn parameter_inventory_remains_reachable_with_regular_draft_rows() {
     h.step(&json!({"click":{"handle":"param:star:span"}})).unwrap();
     assert!(h.widget("Favorites").is_some());
     assert!(scenario::handle_at("param:favorite:span").is_some());
+    // #4952: a favourite, listed under Favourites and User, renames by double-click too (two
+    // editors on one name took each other's focus and the rename closed at once).
+    h.frames(40);
+    h.step(&json!({"click":{"handle":"param:name:span"},"double":true})).unwrap();
+    h.frames(4);
+    assert!(h.app.params.as_ref().unwrap().renaming.is_some(), "the favourite's rename stays open");
+    h.step(&json!({"key":"A","cmd":true})).unwrap();
+    h.step(&json!({"text":"breadth"})).unwrap();
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.session.doc.param("breadth").is_some(), "a favourite renames by double-click");
     h.step(&json!({"click":{"handle":"dialog:cancel"}})).unwrap();
     assert!(h.app.params.is_none());
     assert!(h.app.session.doc.param("pitch").is_some(), "Cancel keeps committed edits");
@@ -537,7 +547,7 @@ fn parameters_header_drag_retains_offset_and_bounds_the_card() {
             h.call("ui.drag", json!({"x0":title.x,"y0":title.y,"x1":title.x+delta.x,"y1":title.y+delta.y,"steps":8}));
             h.frames(6);
             let card = scenario::rect_of("dialog:header").unwrap().union(scenario::rect_of("dialog:footer").unwrap());
-            let viewport = crate::shell::content_rect(&h.app, h.app.viewport.rect.unwrap());
+            let viewport = crate::shell::tool_drag_rect(&h.app, crate::shell::content_rect(&h.app, h.app.viewport.rect.unwrap()));
             assert!(viewport.expand(2.0).contains_rect(card), "{layout:?}: {card:?} outside {viewport:?}");
             assert!(h.app.params.is_some());
         }

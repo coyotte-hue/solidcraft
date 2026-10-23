@@ -6,6 +6,7 @@
 //! viewport, a double-click on a sketch edits it, and a right-click opens the item's menu
 //! ([`crate::context_menu`]).
 
+use crate::ui_kit::{Container, Surface};
 #[cfg(test)]
 #[path = "occurrence_ui_tests.rs"]
 mod occurrence_ui_tests;
@@ -103,6 +104,9 @@ pub struct TreeState {
     anchor: Option<String>,
     /// Row keys in drawing order this frame (for Shift ranges).
     order: Vec<String>,
+    /// The previous frame's complete row order: a Shift click resolves its range here, since
+    /// this frame's `order` does not yet hold the rows below the clicked one (#4991).
+    order_prev: Vec<String>,
 }
 
 /// Moving an occurrence: the offsets typed so far (pending until Capture Position).
@@ -477,10 +481,8 @@ fn click_select(app: &mut SolveApp, ui: &egui::Ui, key: String, sel: Option<Sel>
     if mods.shift
         && let Some(a) = app.tree.anchor.clone()
     {
-        let order = app.tree.order.clone();
-        if let (Some(i), Some(j)) = (order.iter().position(|k| *k == a), order.iter().position(|k| *k == key)) {
-            let (lo, hi) = (i.min(j), i.max(j));
-            let items: Vec<Sel> = order[lo..=hi].iter().filter_map(|k| sel_of_key(k)).collect();
+        let items = shift_range(&app.tree.order_prev, &a, &key).or_else(|| shift_range(&app.tree.order, &a, &key));
+        if let Some(items) = items {
             let _ = app.run("select.set", json!({ "items": items, "add": mods.command || mods.ctrl }));
             return;
         }
@@ -499,6 +501,15 @@ fn click_select(app: &mut SolveApp, ui: &egui::Ui, key: String, sel: Option<Sel>
         app.tree.picked_joints.clear();
         let _ = app.run("select.set", json!({ "items": [sel] }));
     }
+}
+
+/// The selectable rows from `anchor` to `key` (either way round) in a row order, or `None`
+/// when the order lacks either of them.
+fn shift_range(order: &[String], anchor: &str, key: &str) -> Option<Vec<Sel>> {
+    let i = order.iter().position(|k| k == anchor)?;
+    let j = order.iter().position(|k| k == key)?;
+    let rows = order.get(i.min(j)..=i.max(j))?;
+    Some(rows.iter().filter_map(|k| sel_of_key(k)).collect())
 }
 
 fn sel_of_key(k: &str) -> Option<Sel> {
@@ -662,10 +673,6 @@ fn lit_row((selected, hovered): (bool, bool)) -> (bool, Mark) {
     (selected, if selected || hovered { Mark::Here } else { Mark::None })
 }
 
-pub fn browser(app: &mut SolveApp, ui: &mut egui::Ui) {
-    browser_panel(app, ui);
-}
-
 /// How narrow the browser sidebar may be dragged, and how wide (the viewport keeps the rest).
 const MIN_BROWSER_WIDTH: f32 = 170.0;
 const MAX_BROWSER_WIDTH: f32 = 620.0;
@@ -673,24 +680,6 @@ const MAX_BROWSER_WIDTH: f32 = 620.0;
 const BROWSER_RAIL: f32 = 6.0;
 /// How opaque the floating browser's card is; the workspace shows through the rest.
 const BROWSER_FLOAT_ALPHA: f32 = 0.4;
-
-fn browser_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
-    let t = Tokens::get();
-    app.tree.order.clear();
-    DRAWN.with(|d| d.borrow_mut().clear());
-    OCCURRENCES.with(|d| d.borrow_mut().clear());
-    let mut acts = Actions::default();
-    let width = browser_width(app.preferences.browser_width);
-    let panel = egui::Panel::left("sc_browser")
-        .exact_size(width)
-        .resizable(false)
-        .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_6 as i8)))
-        .show(ui, |ui| {
-            browser_contents(app, ui, &mut acts, false);
-        });
-    resize_column(app, ui, panel.response.rect, width, "left-browser-rail");
-    finish_browser(app, ui, acts);
-}
 
 pub(crate) fn browser_width(remembered: f32) -> f32 {
     if remembered.is_finite() { remembered.clamp(MIN_BROWSER_WIDTH, MAX_BROWSER_WIDTH) } else { crate::prefs::DEFAULT_BROWSER_WIDTH }
@@ -710,20 +699,24 @@ pub(crate) fn resize_column(app: &mut SolveApp, ui: &egui::Ui, rect: Rect, width
     crate::scenario::publish_handle(handle, pos2(rect.right() - BROWSER_RAIL / 2.0, rect.center().y));
 }
 
-/// One browser card for the floating shell and the docked shell's optional overlay.
-/// The preference keeps its translucent overlay semantics; the floating shell always has a card.
-pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
+/// One content-hugging browser; the shared container supplies floating or flush compact chrome.
+pub fn browser(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let available = ui.available_rect_before_wrap();
     let t = Tokens::get();
-    app.tree.order.clear();
+    app.tree.order_prev = std::mem::take(&mut app.tree.order);
     DRAWN.with(|d| d.borrow_mut().clear());
     OCCURRENCES.with(|d| d.borrow_mut().clear());
     let mut acts = Actions::default();
-    let gap = crate::shell::SHELL_GAP;
-    let top_gap = if app.ui.layout == crate::shell::LayoutMode::Docked { gap } else { 0.0 };
+    let stacked = crate::timeline_left::stacked(app);
+    let container =
+        Container::new(ui.ctx(), Surface::Panel).joined(crate::ui_kit::DockEdges { left: true, top: true, bottom: stacked, ..Default::default() });
+    let gap = container.gap();
     let width = browser_width(app.preferences.browser_width);
     let vertical = app.ui.show_timeline && app.preferences.timeline_left;
     let mut available = available;
-    let stacked = crate::timeline_left::stacked(app);
+    if !stacked {
+        available.min.x += crate::agent_chat::left_inset(app, available);
+    }
     if vertical
         && !stacked
         && let Some(history) = app.shell.history
@@ -734,33 +727,38 @@ pub fn floating(app: &mut SolveApp, ui: &mut egui::Ui, available: Rect) {
     let bounds = if stacked {
         crate::timeline_left::stacked_rects(app, available).0
     } else {
-        floating_bounds(available, if vertical { None } else { app.shell.history }, if collapsed { t.space_24 + t.space_10 } else { width }, top_gap)
+        panel_bounds(available, if vertical { None } else { app.shell.history }, if collapsed { t.space_24 + t.space_10 } else { width }, gap)
     };
     app.shell.browser = None;
     let min_height = HEADER_H + 2.0 * (CARD_INSET + 1.0);
     if bounds.is_positive() && bounds.height() >= min_height {
-        let fill = if app.preferences.browser_float { t.panel.gamma_multiply(BROWSER_FLOAT_ALPHA) } else { t.panel };
-        let frame = crate::frame::shell_card(fill).inner_margin(CARD_INSET as i8);
+        let fill = if container.floating() && app.preferences.browser_float { t.panel.gamma_multiply(BROWSER_FLOAT_ALPHA) } else { t.panel };
+        let frame = container.frame(ui.ctx(), fill, crate::frame::Side::Left).inner_margin(CARD_INSET as i8);
         let inner_width = (bounds.width() - frame.total_margin().sum().x).max(0.0);
         let inner_height = (bounds.height() - frame.total_margin().sum().y).max(0.0);
-        let card = crate::frame::area(egui::Id::new("sc_browser_card")).fixed_pos(bounds.min).order(egui::Order::Middle).show(ui.ctx(), |ui| {
-            let response = frame.show(ui, |ui| {
-                ui.set_width(inner_width);
-                ui.set_max_height(inner_height);
-                if stacked {
-                    ui.set_min_height(inner_height);
-                    ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, vec2(inner_width, inner_height))));
-                }
-                if collapsed {
-                    browser_collapsed_rail(app, ui);
-                } else {
-                    browser_contents(app, ui, &mut acts, true);
+        let card = Container::new(ui.ctx(), Surface::Panel)
+            .area(egui::Id::new("sc_browser_card"))
+            .fixed_pos(bounds.min)
+            .order(egui::Order::Middle)
+            .show(ui.ctx(), |ui| {
+                let limits = Rect::from_min_max(available.min, pos2(available.right(), bounds.bottom()));
+                let response = container.show_frame(ui, frame, limits, |ui| {
+                    ui.set_width(inner_width);
+                    ui.set_max_height(inner_height);
+                    if stacked {
+                        ui.set_min_height(inner_height);
+                        ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_size(ui.max_rect().min, vec2(inner_width, inner_height))));
+                    }
+                    if collapsed {
+                        browser_collapsed_rail(app, ui);
+                    } else {
+                        browser_contents(app, ui, &mut acts, true);
+                    }
+                });
+                if !collapsed {
+                    resize_column(app, ui, response.response.rect, width, "left-browser-rail");
                 }
             });
-            if !collapsed {
-                resize_column(app, ui, response.response.rect, width, "left-browser-rail");
-            }
-        });
         let rect = card.response.rect;
         app.shell.browser = Some(rect);
         crate::scenario::publish_rect("browser:card", rect);
@@ -799,9 +797,8 @@ fn browser_collapsed_rail(app: &mut SolveApp, ui: &mut egui::Ui) {
     );
 }
 
-pub(crate) fn floating_bounds(available: Rect, history: Option<Rect>, width: f32, top_gap: f32) -> Rect {
-    let gap = crate::shell::SHELL_GAP;
-    let min = available.min + vec2(gap, top_gap);
+pub(crate) fn panel_bounds(available: Rect, history: Option<Rect>, width: f32, gap: f32) -> Rect {
+    let min = available.min + vec2(gap, 0.0);
     let right = (available.right() - gap).max(min.x);
     let bottom = history.map_or(available.bottom() - gap, |r| r.top() - gap).max(min.y);
     Rect::from_min_max(min, pos2((min.x + width).min(right), bottom))
@@ -1583,9 +1580,24 @@ impl CanvasPanel {
     }
 }
 
+/// Does the open dialog's active input take bodies (Combine's target and tools, #4452)? Then a
+/// body clicked in the Browser goes there, as a click on it in the view does, rather than
+/// replacing the selection: overlapping bodies are often only told apart in the Browser.
+fn dialog_takes_body(app: &SolveApp) -> bool {
+    app.dialog.as_ref().and_then(|d| d.active_input()).is_some_and(|i| i.accept & crate::selection::BODIES != 0)
+}
+
 /// A browser click on a plane or axis: it goes to the open dialog's input if that takes it,
 /// otherwise it becomes the selection.
 fn pick_from_browser(app: &mut SolveApp, x: Sel) {
+    if let Sel::Body { .. } = &x
+        && dialog_takes_body(app)
+        && let Some(mut d) = app.dialog.take()
+    {
+        d.pick(&app.session, x);
+        app.dialog = Some(d);
+        return;
+    }
     let hit = match &x {
         Sel::Plane { name } => crate::viewport::Hit::Plane { name: name.clone(), point: solidcraft_engine::geom::Vec3::ZERO },
         Sel::Axis { name } => crate::viewport::Hit::Axis { name: name.clone() },
@@ -1981,6 +1993,8 @@ fn entry_row(
             if let Some(s) = e.sel.clone() {
                 pick_from_browser(app, s);
             }
+        } else if let Some(s) = e.sel.clone().filter(|s| matches!(s, Sel::Body { .. }) && dialog_takes_body(app)) {
+            pick_from_browser(app, s);
         } else {
             click_select(app, ui, e.row_key.clone(), e.sel.clone());
         }
