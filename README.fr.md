@@ -27,25 +27,25 @@
 
 <p align="center">
   <a href="https://solidcraft.io">Site web</a> ·
-  <a href="https://github.com/bherbruck/solidcraft/releases/latest">Téléchargement</a> ·
-  <a href="https://bherbruck.github.io/solidcraft/app/">Essayer dans le navigateur</a> ·
-  <a href="https://bherbruck.github.io/solidcraft/">Documentation</a> ·
+  <a href="https://github.com/tangency-labs/solidcraft/releases/latest">Téléchargement</a> ·
+  <a href="https://coyotte-hue.github.io/solidcraft/app/">Essayer dans le navigateur</a> ·
+  <a href="https://coyotte-hue.github.io/solidcraft/">Documentation</a> ·
   <a href="https://discord.gg/FtU4NQNVDH">Discord</a> ·
   <a href="https://github.com/bherbruck/solidcore">SolidCore</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/bherbruck/solidcraft/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/bherbruck/solidcraft/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
-  <a href="https://github.com/bherbruck/solidcraft/releases/latest"><img src="https://img.shields.io/github/v/release/bherbruck/solidcraft?label=version" alt="Dernière version" /></a>
-  <a href="https://github.com/bherbruck/solidcraft/releases"><img src="https://img.shields.io/github/downloads/bherbruck/solidcraft/total?label=t%C3%A9l%C3%A9chargements" alt="Téléchargements" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/bherbruck/solidcraft?label=licence" alt="Licence" /></a>
+  <a href="https://github.com/tangency-labs/solidcraft/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/tangency-labs/solidcraft/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="https://github.com/tangency-labs/solidcraft/releases/latest"><img src="https://img.shields.io/github/v/release/tangency-labs/solidcraft?label=version" alt="Dernière version" /></a>
+  <a href="https://github.com/tangency-labs/solidcraft/releases"><img src="https://img.shields.io/github/downloads/tangency-labs/solidcraft/total?label=t%C3%A9l%C3%A9chargements" alt="Téléchargements" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/tangency-labs/solidcraft?label=licence" alt="Licence" /></a>
   <a href="https://discord.gg/FtU4NQNVDH"><img src="https://img.shields.io/badge/Discord-rejoindre-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://github.com/bherbruck/solidcraft/stargazers"><img src="https://img.shields.io/github/stars/bherbruck/solidcraft?style=flat&label=%C3%A9toiles" alt="Étoiles" /></a>
+  <a href="https://github.com/tangency-labs/solidcraft/stargazers"><img src="https://img.shields.io/github/stars/tangency-labs/solidcraft?style=flat&label=%C3%A9toiles" alt="Étoiles" /></a>
 </p>
 
 ![SolidCraft 0.8 : modéliser un boîtier de Raspberry Pi 4 depuis une conception vide : une esquisse cotée avec des paramètres, extrusion, congés et coque, un rebord arrondi en une seule sélection, des entretoises répétées sur les trous de fixation de la carte, des découpes de ports, des fentes d'aération, « Pi 4 » gravé dans une police, un matériau PETG avec sa masse dans Propriétés, et un changement de hauteur dans Paramètres](docs/screenshots/demo-0.8.gif)
 
-*Un boîtier de Raspberry Pi 4 depuis une conception vide : une esquisse cotée avec les paramètres de la carte, extrusion, congé, coque, le rebord arrondi d'un seul geste, une entretoise M2.5 répétée sur le rectangle de perçage de 58 × 49 mm, des découpes de ports, des fentes d'aération, « Pi 4 » gravé en DejaVu Sans Bold et un matériau PETG défini dans la conception, avec sa masse dans Propriétés, puis hauteur 24 → 32 mm dans Paramètres et tout se reconstruit. Lecture ×9. [Vidéo complète](https://github.com/bherbruck/solidcraft/raw/refs/heads/main/docs/screenshots/demo-0.8.mp4), enregistrée avec le [script de démo](examples/demo/record_ui.sh).*
+*Un boîtier de Raspberry Pi 4 depuis une conception vide : une esquisse cotée avec les paramètres de la carte, extrusion, congé, coque, le rebord arrondi d'un seul geste, une entretoise M2.5 répétée sur le rectangle de perçage de 58 × 49 mm, des découpes de ports, des fentes d'aération, « Pi 4 » gravé en DejaVu Sans Bold et un matériau PETG défini dans la conception, avec sa masse dans Propriétés, puis hauteur 24 → 32 mm dans Paramètres et tout se reconstruit. Lecture ×9. [Vidéo complète](https://github.com/tangency-labs/solidcraft/raw/refs/heads/main/docs/screenshots/demo-0.8.mp4), enregistrée avec le [script de démo](examples/demo/record_ui.sh).*
 
 ## Téléchargement
 
@@ -58,7 +58,7 @@
   (Apple silicon et Intel).
 - **Linux :** téléchargez l'[AppImage][linux-appimage], autorisez son exécution en tant que programme, puis ouvrez-la.
   Ou installez le [.deb][linux-deb] (Ubuntu, Debian, Mint) ou le [.rpm][linux-rpm] (Fedora,
-  openSUSE), ou utilisez [Flatpak](https://bherbruck.github.io/solidcraft/guide/getting-started.html#linux-flatpak).
+  openSUSE), ou utilisez [Flatpak](https://coyotte-hue.github.io/solidcraft/guide/getting-started.html#linux-flatpak).
   Avec Snap : `sudo snap install solidcraft` ([Snap Store][snap-store], ou le [fichier .snap][linux-snap]).
   Pour ARM64 : [AppImage][linux-arm64-appimage], [.deb][linux-arm64-deb], [.rpm][linux-arm64-rpm].
 - **Web :** [essayez dans votre navigateur][web-app], sans rien installer.
@@ -66,31 +66,31 @@
 Les téléchargements ne sont pas encore signés. Sous Windows, si SmartScreen vous alerte, choisissez **Informations complémentaires**, puis
 **Exécuter quand même**. Sous macOS, la première fois, faites un clic droit sur SolidCraft dans Applications et choisissez **Ouvrir**.
 
-Les anciennes versions, les sommes de contrôle et d'autres formats se trouvent sur la [page des versions](https://github.com/bherbruck/solidcraft/releases).
+Les anciennes versions, les sommes de contrôle et d'autres formats se trouvent sur la [page des versions](https://github.com/tangency-labs/solidcraft/releases).
 Les détails d'installation, la mise à niveau depuis des versions antérieures et la compilation à partir des sources sont dans
-[Démarrage](https://bherbruck.github.io/solidcraft/guide/getting-started.html).
+[Démarrage](https://coyotte-hue.github.io/solidcraft/guide/getting-started.html).
 
 [badge-windows]: https://img.shields.io/badge/Windows-T%C3%A9l%C3%A9charger-0078D6?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0yIDJoOS41djkuNUgyek0xMi41IDJIMjJ2OS41aC05LjV6TTIgMTIuNWg5LjVWMjJIMnpNMTIuNSAxMi41SDIyVjIyaC05LjV6Ii8%2BPC9zdmc%2B
 [badge-macos]: https://img.shields.io/badge/macOS-T%C3%A9l%C3%A9charger-333333?style=for-the-badge&logo=apple&logoColor=white
 [badge-linux]: https://img.shields.io/badge/Linux-AppImage-E95420?style=for-the-badge&logo=linux&logoColor=white
 [badge-snap]: https://img.shields.io/badge/Snap-Snap_Store-82BEA0?style=for-the-badge&logo=snapcraft&logoColor=white
 [badge-web]: https://img.shields.io/badge/Web-Essayer_dans_le_navigateur-2EA44F?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIvPjxwYXRoIGQ9Ik0yIDEyaDIwTTEyIDJhMTUgMTUgMCAwIDEgMCAyME0xMiAyYTE1IDE1IDAgMCAwIDAgMjAiLz48L3N2Zz4%3D
-[windows-msi]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-windows-x64.msi
-[windows-arm64-msi]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-windows-arm64.msi
-[windows-x86-msi]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-windows-x86.msi
-[windows-portable]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-windows-x64-portable.zip
-[macos-dmg]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-macos-universal.dmg
-[linux-appimage]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-x86_64.AppImage
-[linux-deb]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-x86_64.deb
-[linux-rpm]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-x86_64.rpm
-[linux-arm64-appimage]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-aarch64.AppImage
-[linux-arm64-deb]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-aarch64.deb
-[linux-arm64-rpm]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-aarch64.rpm
-[linux-snap]: https://github.com/bherbruck/solidcraft/releases/latest/download/solidcraft-linux-x86_64.snap
+[windows-msi]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-windows-x64.msi
+[windows-arm64-msi]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-windows-arm64.msi
+[windows-x86-msi]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-windows-x86.msi
+[windows-portable]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-windows-x64-portable.zip
+[macos-dmg]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-macos-universal.dmg
+[linux-appimage]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-x86_64.AppImage
+[linux-deb]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-x86_64.deb
+[linux-rpm]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-x86_64.rpm
+[linux-arm64-appimage]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-aarch64.AppImage
+[linux-arm64-deb]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-aarch64.deb
+[linux-arm64-rpm]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-aarch64.rpm
+[linux-snap]: https://github.com/tangency-labs/solidcraft/releases/latest/download/solidcraft-linux-x86_64.snap
 [snap-store]: https://snapcraft.io/solidcraft
-[web-app]: https://bherbruck.github.io/solidcraft/app/
+[web-app]: https://coyotte-hue.github.io/solidcraft/app/
 
-**Documentation :** le [livre SolidCraft](https://bherbruck.github.io/solidcraft/) (guide utilisateur,
+**Documentation :** le [livre SolidCraft](https://coyotte-hue.github.io/solidcraft/) (guide utilisateur,
 guide développeur et référence des commandes ; sources dans [docs/book](docs/book)).
 
 **Communauté :** discutez avec les utilisateurs et les contributeurs sur [Discord](https://discord.gg/FtU4NQNVDH).
@@ -100,7 +100,7 @@ correspondent à leur volume, aire, centre de masse et boîte englobante calcul�
 ([docs/oracle.md](docs/oracle.md)) ; la dernière est un bug suivi.
 Ces vérifications n'établissent pas une équivalence géométrique ou de flux de travail complète. Les commandes dont dispose
 SolidCraft sont listées par domaine dans [docs/features.md](docs/features.md) ; l'état et les plans sont dans [ROADMAP.md](ROADMAP.md).
-Le travail en cours et les bugs connus sont dans les [issues GitHub](https://github.com/bherbruck/solidcraft/issues),
+Le travail en cours et les bugs connus sont dans les [issues GitHub](https://github.com/tangency-labs/solidcraft/issues),
 et l'aide est bienvenue : voir [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Construit avec SolidCraft
@@ -110,7 +110,7 @@ et l'aide est bienvenue : voir [CONTRIBUTING.md](CONTRIBUTING.md).
 *SELENE, un rover scientifique construit entièrement via le serveur MCP de SolidCraft par
 [@0xlillith](https://github.com/0xlillith/solidcraft-rover) : 3 323 étapes de chronologie modifiables qui
 se reconstruisent sans erreur, rejouées ici à vitesse ×2.
-[Vidéo complète](https://github.com/bherbruck/solidcraft/raw/refs/heads/main/docs/screenshots/rover-build.mp4)
+[Vidéo complète](https://github.com/tangency-labs/solidcraft/raw/refs/heads/main/docs/screenshots/rover-build.mp4)
 · [télécharger le modèle modifiable](https://github.com/0xlillith/solidcraft-rover/releases/tag/v1.0.0).*
 
 ## Ce qui fonctionne
