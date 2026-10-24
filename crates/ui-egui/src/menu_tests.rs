@@ -4,8 +4,10 @@ use crate::test_support::sample_app;
 use egui::pos2;
 use serde_json::json;
 use solidcraft_engine::Session;
+use solidcraft_engine::geom::Vec3;
 
 use crate::context_menu::{self, Item, Target};
+use crate::viewport::Hit;
 use crate::{Services, SolveApp};
 
 #[test]
@@ -57,7 +59,7 @@ fn empty_space_offers_view_items_and_greys_out_undo() {
     assert!(!context_menu::radial_items(&app)[0].enabled, "no command to repeat yet");
     // Hide Origin toggles.
     context_menu::run_item(&mut app, &find(&items, "Hide Origin"), pos2(0.0, 0.0));
-    assert!(!app.ui.show_origin);
+    assert!(!app.origin_shown());
 }
 
 #[test]
@@ -133,6 +135,29 @@ fn a_selected_face_keeps_the_body_menu_beside_a_sketch_curve() {
     assert!(find(&items, "Press Pull").enabled);
     assert!(find(&items, "Edit Profile Sketch").enabled);
     assert!(!items.iter().any(|i| i.label == "Redefine Sketch Plane"), "the face menu, not the sketch menu");
+}
+
+/// A right-click on a face or edge that is part of a multi-selection keeps the whole selection:
+/// the pick keeps a point of its own, so the face is compared by body and index (#3733).
+#[test]
+fn right_click_on_a_selected_face_keeps_the_multi_selection() {
+    let mut app = sample_app();
+    let b = body(&app);
+    app.run(
+        "select.set",
+        json!({"items": [
+            {"type": "face", "body": b, "index": 0, "point": [1, 2, 3]},
+            {"type": "face", "body": b, "index": 1, "point": [4, 5, 6]},
+        ]}),
+    )
+    .unwrap();
+    app.viewport.hover = Some(Hit::Face { body: b.clone(), index: 0, point: Vec3::new(9.0, 9.0, 9.0) });
+    context_menu::open(&mut app, pos2(400.0, 300.0));
+    assert_eq!(app.session.selection.len(), 2, "the right-click keeps the faces it is about: {:?}", app.session.selection);
+    // A face outside the selection is still picked, so its menu is about the face under the cursor.
+    app.viewport.hover = Some(Hit::Face { body: b, index: 2, point: Vec3::new(9.0, 9.0, 9.0) });
+    context_menu::open(&mut app, pos2(400.0, 300.0));
+    assert_eq!(app.session.selection.len(), 1, "a face outside the selection is picked: {:?}", app.session.selection);
 }
 
 #[test]
@@ -215,7 +240,7 @@ fn sketch_menu_hides_and_moves_to_another_plane() {
     context_menu::run_item(&mut app, &find(&items, "Show/Hide"), pos2(0.0, 0.0));
     assert_eq!(crate::browser::sketch_visible(&app, id), !vis);
     context_menu::run_item(&mut app, &find(&items, "Show Dimension"), pos2(0.0, 0.0));
-    assert_eq!(app.ui.shown_dims, vec![id]);
+    assert_eq!(app.session.visibility.shown_dimensions, vec![id]);
     assert!(find(&context_menu::items(&app, &t), "Hide Dimension").enabled);
     context_menu::run_item(&mut app, &find(&items, "Edit Sketch"), pos2(0.0, 0.0));
     assert_eq!(app.session.active_sketch, Some(id));
@@ -254,6 +279,11 @@ fn component_menu_activates_grounds_and_pastes() {
     let t = Target::Component { id: c };
     act(&mut app, &t, "Activate");
     assert_eq!(app.session.active_component, c);
+    // The design's first part comes in grounded (#2804); the menu frees it and grounds it again.
+    assert!(app.session.doc.occurrence_of(c).unwrap().grounded);
+    act(&mut app, &t, "Unground");
+    assert!(!app.session.doc.occurrence_of(c).unwrap().grounded);
+    assert!(find(&context_menu::items(&app, &t), "Move/Copy").enabled, "free");
     act(&mut app, &t, "Ground");
     assert!(app.session.doc.occurrence_of(c).unwrap().grounded);
     assert!(!find(&context_menu::items(&app, &t), "Move/Copy").enabled, "grounded");
@@ -274,10 +304,10 @@ fn move_shortcut_uses_the_selected_nested_instance_and_pending_position() {
     let baseline = app.session.pending_moves[&child];
     app.run("select.set", json!({"items":[{"type":"occurrence","path":path}]})).unwrap();
     crate::keymap::bind(&mut app, "solid.move", "Shift+M", false).unwrap();
-    crate::keymap::press(&mut app, "M");
+    crate::keymap::press(&mut app, "M", false);
     assert!(app.tree.occurrence_move.is_none(), "the old shortcut was cleared");
     app.ui.tab = "INSPECT".into();
-    crate::keymap::press(&mut app, "Shift+M");
+    crate::keymap::press(&mut app, "Shift+M", false);
     assert_eq!(app.ui.tab, "MODEL", "starting component Move still selects the command's workspace tab");
     let movement = app.tree.occurrence_move.as_ref().expect("component Move opens from its rebound shortcut");
     assert_eq!(movement.occurrence, child);
@@ -295,13 +325,13 @@ fn move_shortcut_respects_grounding_and_keeps_body_selection_as_a_body_move() {
     app.run("solid.box", json!({"length":30,"width":20,"height":10})).unwrap();
     app.run("occurrence.ground", json!({"occurrence":occurrence,"grounded":true})).unwrap();
     app.run("select.set", json!({"items":[{"type":"occurrence","path":[occurrence]}]})).unwrap();
-    crate::keymap::press(&mut app, "M");
+    crate::keymap::press(&mut app, "M", false);
     assert!(app.tree.occurrence_move.is_none(), "a grounded component cannot move");
     assert!(app.dialog.is_none(), "do not fall back to moving the grounded component's bodies");
 
     app.run("occurrence.ground", json!({"occurrence":occurrence,"grounded":false})).unwrap();
     app.run("select.set", json!({"items":[{"type":"body","name":"Body1"}]})).unwrap();
-    crate::keymap::press(&mut app, "M");
+    crate::keymap::press(&mut app, "M", false);
     assert!(app.tree.occurrence_move.is_none(), "a body selection still edits geometry");
     let dialog = app.dialog.as_ref().expect("body Move opens");
     assert!(matches!(dialog.kind, crate::dialogs::Kind::Move { .. }));
@@ -318,7 +348,7 @@ fn pick_runs_an_item_of_the_open_menu() {
     assert!(context_menu::pick(&mut app, "Undo").is_err(), "disabled");
     assert!(context_menu::pick(&mut app, "ui.origin").is_ok());
     assert!(app.viewport.context_menu.is_none(), "a pick closes the menu");
-    assert!(!app.ui.show_origin);
+    assert!(!app.origin_shown());
 }
 
 #[test]
@@ -399,6 +429,82 @@ fn delete_key_handles_every_kind_and_asks_about_dependents() {
     crate::delete::delete_selection(&mut app);
     assert!(app.status.as_ref().is_some_and(|s| s.0.contains("Delete Face")), "{:?}", app.status);
     assert_eq!(app.session.doc.features.len(), n);
+}
+
+#[test]
+fn browser_feature_menu_deletes_its_target_and_supports_undo() {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    for (name, x) in [("Keep", 0), ("Delete", 30)] {
+        app.run("solid.box", json!({"length":10,"width":10,"height":10,"corner":[x,0,0],"body_name":name})).unwrap();
+    }
+    let keep = app.session.doc.features[0].id;
+    let target = app.session.doc.features[1].id;
+    // A Browser context menu acts on its row, even when another feature is selected.
+    app.session.selection = vec![solidcraft_engine::Sel::Feature { id: keep }];
+    let saved = app.session.doc.to_json();
+    let undo = app.session.undo.len();
+    act(&mut app, &Target::Feature { id: target }, "Delete");
+    assert!(app.menu.confirm.is_none());
+    assert!(app.session.doc.feature(keep).is_some());
+    assert!(app.session.doc.feature(target).is_none());
+    assert_eq!(app.session.undo.len(), undo + 1);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc.to_json(), saved);
+    app.run("edit.redo", json!({})).unwrap();
+    assert!(app.session.doc.feature(keep).is_some());
+    assert!(app.session.doc.feature(target).is_none());
+    assert!(!find(&context_menu::items(&app, &Target::Feature { id: target }), "Delete").enabled);
+    assert!(!find(&context_menu::items(&app, &Target::Feature { id: target }), "Rename").enabled);
+}
+
+#[test]
+fn browser_feature_menu_renames_its_target_and_supports_undo() {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    for x in [0, 30] {
+        app.run("solid.box", json!({"length":10,"width":10,"height":10,"corner":[x,0,0]})).unwrap();
+    }
+    let keep = app.session.doc.features[0].id;
+    let target = app.session.doc.features[1].id;
+    let keep_name = app.session.doc.feature(keep).unwrap().name.clone();
+    let target_name = app.session.doc.feature(target).unwrap().name.clone();
+    app.session.selection = vec![solidcraft_engine::Sel::Feature { id: keep }];
+    let saved = app.session.doc.to_json();
+    let undo = app.session.undo.len();
+    act(&mut app, &Target::Feature { id: target }, "Rename");
+    assert_eq!(app.menu.rename.as_ref().unwrap().text, target_name);
+    assert!(context_menu::finish_rename(&mut app, Some("Cancelled"), false));
+    assert_eq!(app.session.doc.to_json(), saved);
+    assert_eq!(app.session.undo.len(), undo);
+    act(&mut app, &Target::Feature { id: target }, "Rename");
+    assert!(context_menu::finish_rename(&mut app, Some("Renamed feature"), true));
+    assert!(app.menu.rename.is_none());
+    assert_eq!(app.session.doc.feature(target).unwrap().name, "Renamed feature");
+    assert_eq!(app.session.doc.feature(keep).unwrap().name, keep_name);
+    assert_eq!(app.session.undo.len(), undo + 1);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc.to_json(), saved);
+    app.run("edit.redo", json!({})).unwrap();
+    assert_eq!(app.session.doc.feature(target).unwrap().name, "Renamed feature");
+}
+
+#[test]
+fn browser_feature_menu_confirms_dependent_changes_before_deleting() {
+    let mut app = sample_app();
+    let target = app.session.doc.features[1].id;
+    let saved = app.session.doc.to_json();
+    let undo = app.session.undo.len();
+    act(&mut app, &Target::Feature { id: target }, "Delete");
+    assert!(app.menu.confirm.is_some(), "later features depend on the plate's extrusion");
+    assert_eq!(app.session.doc.to_json(), saved);
+    assert_eq!(app.session.undo.len(), undo);
+    assert!(crate::delete::confirm(&mut app, false));
+    assert_eq!(app.session.doc.to_json(), saved);
+    act(&mut app, &Target::Feature { id: target }, "Delete");
+    assert!(crate::delete::confirm(&mut app, true));
+    assert!(app.session.doc.feature(target).is_none());
+    assert_eq!(app.session.undo.len(), undo + 1);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc.to_json(), saved);
 }
 
 #[test]
@@ -608,6 +714,7 @@ fn an_uncaptured_move_asks_before_the_next_command() {
     let b = body(&app);
     app.run("component.from_bodies", json!({"bodies": [b]})).unwrap();
     let occ = app.session.doc.occurrences[0].id;
+    app.run("occurrence.ground", json!({"occurrence": occ, "grounded": false})).unwrap();
     app.run("occurrence.move", json!({"occurrence": occ, "translate": [10, 0, 0], "capture": false})).unwrap();
     app.start("sketch.create");
     assert_eq!(app.tree.capture_prompt.as_deref(), Some("sketch.create"), "asks first");
@@ -647,6 +754,7 @@ fn occurrence_moves_turn_about_their_origin_then_move() {
     let b = body(&app);
     app.run("component.from_bodies", json!({"bodies": [b]})).unwrap();
     let occ = app.session.doc.occurrences[0].id;
+    app.run("occurrence.ground", json!({"occurrence": occ, "grounded": false})).unwrap();
     let mut m = crate::browser::OccMove::new(occ);
     m.pivot = Some(solidcraft_engine::geom::Vec3::new(5.0, 0.0, 0.0));
     m.translate = [10.0, 0.0, 0.0];
@@ -1042,4 +1150,91 @@ fn narrow_overflow_submenu_keeps_opening_click_and_accepts_the_next_click() {
     assert!(crate::scenario::handle_at("toolbar:solid.extrude").is_some());
     h.step(&json!({"click":{"handle":"toolbar:solid.extrude"}})).unwrap();
     assert!(matches!(h.app.dialog.as_ref().map(|d| &d.kind), Some(crate::dialogs::Kind::Extrude { .. })));
+}
+
+/// A right-click on a browser row opens its menu, also when the press and the release reach the
+/// same frame (a trackpad tap, or a click during a slow frame).
+mod browser_rows {
+    use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
+
+    use crate::context_menu::Target;
+    use crate::scenario::Harness;
+
+    fn harness() -> Harness {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.ui.show_browser = true;
+        h.app.session.run_script(&solidcraft_engine::sample::script()).expect("sample");
+        h.frames(3);
+        h
+    }
+
+    /// What a menu is about, without the browser's scope of a folder.
+    fn kind(t: &Target) -> String {
+        match t {
+            Target::Folder { folder, .. } => format!("folder:{folder}"),
+            Target::Body { name } => format!("body:{name}"),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn right(at: Pos2, pressed: bool) -> Event {
+        Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    fn right_click(h: &mut Harness, at: Pos2, one_frame: bool) {
+        h.frame_with(vec![Event::PointerMoved(at)]);
+        if one_frame {
+            h.frame_with(vec![right(at, true), right(at, false)]);
+        } else {
+            h.frame_with(vec![right(at, true)]);
+            h.frame_with(vec![right(at, false)]);
+        }
+        h.frames(4);
+    }
+
+    #[test]
+    fn a_right_click_on_a_row_opens_its_menu_however_its_events_arrive() {
+        let mut h = harness();
+        let rows = [("row:Origin", "Origin"), ("row:Bodies", "folder:bodies"), ("row:Plate", "body:Plate"), ("row:Sketches", "folder:sketches")];
+        for (row, target) in rows {
+            let Some(centre) = crate::scenario::handle_at(row) else { panic!("{row} is not drawn: {:?}", crate::scenario::handles("row:")) };
+            // Pointers sit between whole points (trackpads, HiDPI screens).
+            for offset in [vec2(0.0, 0.0), vec2(0.25, 0.75), vec2(0.5, 0.5), vec2(0.75, 0.25)] {
+                for one_frame in [false, true] {
+                    crate::context_menu::close(&mut h.app);
+                    h.frames(2);
+                    right_click(&mut h, centre + offset, one_frame);
+                    let how = if one_frame { "in one frame" } else { "in two frames" };
+                    assert!(h.app.viewport.context_menu.is_some(), "{row} at {offset:?}, press and release {how}: the menu did not stay open");
+                    assert_eq!(kind(&h.app.menu.target), target, "{row}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_elsewhere_moves_or_closes_an_open_menu() {
+        let mut h = harness();
+        let half = vec2(0.5, 0.5);
+        let plate = crate::scenario::handle_at("row:Plate").expect("Plate row");
+        let origin = crate::scenario::handle_at("row:Origin").expect("Origin row");
+        right_click(&mut h, plate + half, true);
+        assert!(h.app.viewport.context_menu.is_some());
+        assert_eq!(h.app.menu.target, Target::Body { name: "Plate".into() });
+        right_click(&mut h, origin + half, true);
+        assert!(h.app.viewport.context_menu.is_some(), "a right-click on another row opens that row's menu");
+        assert_eq!(h.app.menu.target, Target::Origin);
+
+        let empty = h.app.viewport.rect.expect("viewport").right_bottom() - vec2(80.5, 80.5);
+        right_click(&mut h, empty, true);
+        assert!(h.app.viewport.context_menu.is_some(), "the viewport's menu opens the same way");
+        assert_eq!(h.app.menu.target, Target::Viewport);
+
+        let primary = |pressed| Event::PointerButton { pos: origin, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.frame_with(vec![Event::PointerMoved(origin)]);
+        h.frame_with(vec![primary(true), primary(false)]);
+        h.frames(2);
+        assert!(h.app.viewport.context_menu.is_none(), "a click outside the menu closes it");
+    }
 }
