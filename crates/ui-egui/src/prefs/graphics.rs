@@ -118,11 +118,18 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::text(ui, app.tr("prefs.contact_shading_note"), ui_kit::Text::Hint("ao"));
     });
     ui_kit::settings_section(ui, "viewport", app.tr("prefs.viewport"), |ui| {
+        let response = ui_kit::checkbox(ui, app.tr("ui.cosmetic_thread_markings"), &mut app.preferences.cosmetic_threads)
+            .on_hover_text(app.tr("ui.cosmetic_thread_markings_help"));
+        crate::scenario::publish_handle("prefs:cosmetic_threads", response.rect.center());
         ui.columns(2, |columns| {
             if let Some(left) = columns.get_mut(0) {
                 ui_kit::checkbox(left, crate::i18n::tr_label("Grid"), &mut app.ui.show_grid);
                 ui_kit::checkbox(left, crate::i18n::tr_label("Perspective view"), &mut app.ui.perspective);
                 setting::show_frame_rate(app, left).on_hover_text(app.tr("settings.frame_rate_note"));
+                left.add_enabled_ui(app.preferences.show_frame_rate, |ui| {
+                    ui_kit::checkbox(ui, app.tr("ui.frame_rate_details"), &mut app.preferences.frame_rate_details)
+                        .on_hover_text(app.tr("settings.frame_rate_details_note"));
+                });
                 setting::reference_geometry_through_bodies(app, left).on_hover_text(app.tr("settings.reference_geometry_through_bodies_help"));
             }
             if let Some(right) = columns.get_mut(1) {
