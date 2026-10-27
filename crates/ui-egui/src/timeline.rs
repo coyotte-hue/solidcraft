@@ -76,6 +76,7 @@ pub(crate) fn icon_of(k: &FeatureKind) -> &'static str {
         FeatureKind::Cylinder { .. } => "cylinder",
         FeatureKind::Sphere { .. } => "sphere",
         FeatureKind::Torus { .. } => "torus",
+        FeatureKind::Cone { .. } => "cone",
         FeatureKind::Combine { .. } => "combine",
         FeatureKind::Pattern { pattern: solidcraft_engine::doc::PatternKind::Rectangular { .. }, .. } => "pattern_rect",
         FeatureKind::Pattern { pattern: solidcraft_engine::doc::PatternKind::Path { .. }, .. } => "pattern_path",
@@ -201,11 +202,19 @@ pub(crate) fn delete_feature(app: &mut SolveApp, id: u64) {
 /// while, #2678), then delete them or ask first.
 pub(crate) fn delete_features(app: &mut SolveApp, ids: Vec<u64>) {
     let checks = ids.iter().map(|id| ("timeline.dependents".to_string(), json!({ "feature": id }))).collect();
-    app.check_delete(checks, crate::deferred::AfterCheck::Timeline(ids));
+    app.check_delete(checks, crate::deferred::AfterCheck::Timeline { features: ids, groups: Vec::new() });
 }
 
-/// [`delete_features`] once each feature's `timeline.dependents` report is in.
-pub(crate) fn delete_checked_features(app: &mut SolveApp, ids: Vec<u64>, reports: &[Value]) {
+/// Delete timeline folders with their features (`contents`, nested folders' included) after the
+/// same check as [`delete_features`] (#7219).
+pub(crate) fn delete_folders(app: &mut SolveApp, groups: Vec<u64>, contents: Vec<u64>) {
+    let checks = contents.iter().map(|id| ("timeline.dependents".to_string(), json!({ "feature": id }))).collect();
+    app.check_delete(checks, crate::deferred::AfterCheck::Timeline { features: contents, groups });
+}
+
+/// [`delete_features`] once each feature's `timeline.dependents` report is in; `groups` are
+/// timeline folders deleted with them.
+pub(crate) fn delete_checked_features(app: &mut SolveApp, ids: Vec<u64>, groups: Vec<u64>, reports: &[Value]) {
     // Each report is about one feature alone, so it names the others being deleted too: those
     // go anyway and are left out of the confirmation.
     let deleting: Vec<&str> = ids.iter().filter_map(|id| app.session.doc.feature(*id)).map(|f| f.name.as_str()).collect();
@@ -225,10 +234,15 @@ pub(crate) fn delete_checked_features(app: &mut SolveApp, ids: Vec<u64>, reports
         }
     }
     if with.is_empty() && fail.is_empty() {
-        let _ = app.run_heavy("timeline.delete", json!({ "features": ids }));
+        let _ = app.run_heavy("timeline.delete", delete_params(&ids, &groups));
     } else {
-        app.dialog = Some(crate::dialogs::Dialog::confirm_delete_many(ids, with.into_iter().collect(), fail.into_iter().collect()));
+        app.dialog = Some(crate::dialogs::Dialog::confirm_delete_many(ids, groups, with.into_iter().collect(), fail.into_iter().collect()));
     }
+}
+
+/// `timeline.delete`'s parameters for these features and timeline folders.
+pub(crate) fn delete_params(features: &[u64], groups: &[u64]) -> Value {
+    if groups.is_empty() { json!({ "features": features }) } else { json!({ "features": features, "groups": groups }) }
 }
 
 /// The selected timeline features, in timeline order.
@@ -542,6 +556,7 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                     suppressed: *suppressed,
                     error: err.is_some(),
                     warning: warn.is_some(),
+                    reference: false,
                     // A dragged feature takes the colour of its drop bar.
                     accent: if drag == Some(Drag::Feature(*id)) { crate::theme::TabAccent::for_tab(&t, "SKETCH") } else { accent },
                 }
@@ -998,7 +1013,7 @@ mod tests {
             h.step(&json!({"widget": "Paste"})).unwrap();
             assert_eq!(h.app.session.doc.features.len(), 4, "left: {left}");
             let bodies: Vec<String> = h.app.session.model.state().bodies.iter().map(|b| b.name.clone()).collect();
-            assert_eq!(bodies, ["One", "Two", "One (copy)", "Two (copy)"], "left: {left}");
+            assert_eq!(bodies, ["One", "Two", "One (2)", "Two (2)"], "left: {left}");
         }
     }
 

@@ -144,6 +144,24 @@ fn redefining_a_blend_replaces_persistent_edge_selection_and_survives_resize() {
     assert!(s.model.result(old.id).unwrap().warning.is_none());
 }
 
+/// A redefine computes the features after the edited one once: its trial's results are kept
+/// for the session's own evaluation, though the cache holds only the last state (a large
+/// design's).
+#[test]
+fn redefining_computes_the_later_features_once() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 10, "height": 5, "name": "Base"}));
+    for x in [30, 40, 50] {
+        run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [x, 0, 0]}));
+    }
+    *s.model.cache.lock().unwrap() = solidcraft_doc::EvalCache::with_budget(1);
+    let reply =
+        run(&mut s, "timeline.redefine", json!({"feature": "Base", "command": "solid.box", "params": {"length": 25, "width": 10, "height": 5}}));
+    assert_eq!(reply["recomputed"], 0, "{reply}");
+    let volume = run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap();
+    assert!((volume - (25.0 * 10.0 * 5.0 + 3.0 * 125.0)).abs() < 1e-6, "{volume}");
+}
+
 #[test]
 fn redefining_preserves_body_names_participants_and_marker_without_temporary_features() {
     let mut s = Session::default();
@@ -662,6 +680,108 @@ fn timeline_folders_can_nest_and_reject_cycles() {
     assert_eq!(s.doc.timeline_groups.iter().find(|group| group.id == child).unwrap().parent, None, "deleting a folder promotes its children");
 }
 
+/// Four separate boxes, `First`…`Fourth`, for the timeline folder tests.
+fn four_boxes() -> Session {
+    let mut s = Session::default();
+    for (i, name) in ["First", "Second", "Third", "Fourth"].into_iter().enumerate() {
+        let corner = [20 * i, 0, 0];
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": corner, "operation": "new_body", "name": name}));
+    }
+    s
+}
+
+fn feature_names(s: &Session) -> Vec<String> {
+    s.doc.features.iter().map(|feature| feature.name.clone()).collect()
+}
+
+/// `timeline.delete {groups}` deletes a folder with its features and nested folders in one undo
+/// step; other folders and features stay, and `timeline.ungroup` still keeps the features (#7219).
+#[test]
+fn timeline_delete_takes_a_folder_with_its_features_and_nested_folders() {
+    let mut s = four_boxes();
+    let outer = run(&mut s, "timeline.group", json!({"name": "Outer", "features": ["Second"]}))["group"].as_u64().unwrap();
+    let inner = run(&mut s, "timeline.group", json!({"name": "Inner", "features": ["Third"], "parent": outer}))["group"].as_u64().unwrap();
+    let keep = run(&mut s, "timeline.group", json!({"name": "Keep", "features": ["Fourth"]}))["group"].as_u64().unwrap();
+    let before = s.doc.clone();
+
+    let out = run(&mut s, "timeline.delete", json!({"groups": [outer]}));
+    assert_eq!(feature_names(&s), ["First", "Fourth"]);
+    assert_eq!(out["groups"], json!([outer, inner]), "{out}");
+    assert_eq!(s.doc.timeline_groups.iter().map(|group| group.id).collect::<Vec<_>>(), [keep], "the nested folder goes too");
+    assert_eq!(s.model.state().bodies.len(), 2);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.timeline_groups, s.doc.timeline_groups);
+
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.features, before.features, "one undo step brings the features back");
+    assert_eq!(s.doc.timeline_groups, before.timeline_groups, "and the folders, nested as they were");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(feature_names(&s), ["First", "Fourth"]);
+    run(&mut s, "edit.undo", json!({}));
+
+    // A folder and a feature outside it in one delete; an empty folder goes on its own.
+    run(&mut s, "timeline.delete", json!({"groups": [inner], "features": ["First"]}));
+    assert_eq!(feature_names(&s), ["Second", "Fourth"]);
+    assert_eq!(s.doc.timeline_groups.iter().map(|group| group.name.as_str()).collect::<Vec<_>>(), ["Outer", "Keep"]);
+    let empty = run(&mut s, "timeline.group", json!({"name": "Empty"}))["group"].as_u64().unwrap();
+    assert_eq!(run(&mut s, "timeline.delete", json!({"groups": [empty]}))["deleted"], json!([]));
+    assert!(!s.doc.timeline_groups.iter().any(|group| group.id == empty));
+
+    let before = s.doc.clone();
+    for bad in [json!({"groups": [999_999]}), json!({"groups": ["Outer"]}), json!({"groups": 3}), json!({"groups": []})] {
+        assert!(s.execute("timeline.delete", &bad).is_err(), "{bad}");
+        assert_eq!(s.doc, before, "{bad}: a refused delete changes nothing");
+    }
+}
+
+/// `timeline.suppress {groups}` suppresses every feature of a folder and its nested folders in
+/// one undo step, toggles like several features do, and works with the marker inside the
+/// folder (#7219).
+#[test]
+fn timeline_suppress_takes_a_folder_with_its_nested_folders() {
+    let mut s = four_boxes();
+    let outer = run(&mut s, "timeline.group", json!({"name": "Outer", "features": ["Second"]}))["group"].as_u64().unwrap();
+    run(&mut s, "timeline.group", json!({"name": "Inner", "features": ["Third"], "parent": outer}));
+    let suppressed = |s: &Session| s.doc.features.iter().filter(|feature| feature.suppressed).map(|feature| feature.name.clone()).collect::<Vec<_>>();
+
+    let out = run(&mut s, "timeline.suppress", json!({"groups": [outer]}));
+    assert_eq!(out["suppressed"], true);
+    assert_eq!(out["groups"], json!([outer]));
+    assert_eq!(suppressed(&s), ["Second", "Third"]);
+    assert_eq!(s.model.state().bodies.len(), 2);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.features, s.doc.features);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(suppressed(&s).is_empty(), "one undo step");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(suppressed(&s), ["Second", "Third"]);
+
+    // Toggle: all suppressed, so all come back; with one of them active, all are suppressed.
+    run(&mut s, "timeline.suppress", json!({"groups": [outer]}));
+    assert!(suppressed(&s).is_empty());
+    run(&mut s, "timeline.suppress", json!({"feature": "Third"}));
+    run(&mut s, "timeline.suppress", json!({"groups": [outer]}));
+    assert_eq!(suppressed(&s), ["Second", "Third"]);
+    run(&mut s, "timeline.suppress", json!({"groups": [outer], "suppressed": false, "features": ["Fourth"]}));
+    assert!(suppressed(&s).is_empty(), "an explicit state, with a feature outside the folder as well");
+
+    // The marker between the folder's features: the folder is suppressed all the same, and the
+    // marker stays where it was.
+    run(&mut s, "timeline.roll_to", json!({"feature": "Second"}));
+    assert_eq!(s.doc.marker, Some(2));
+    run(&mut s, "timeline.suppress", json!({"groups": [outer], "suppressed": true}));
+    assert_eq!(suppressed(&s), ["Second", "Third"]);
+    assert_eq!(s.doc.marker, Some(2));
+    assert_eq!(s.model.state().bodies.len(), 1, "only First is before the marker and not suppressed");
+
+    let empty = run(&mut s, "timeline.group", json!({"name": "Empty"}))["group"].as_u64().unwrap();
+    let before = s.doc.clone();
+    for bad in [json!({"groups": [empty]}), json!({"groups": [999_999]}), json!({"groups": [outer], "suppressed": "yes"})] {
+        assert!(s.execute("timeline.suppress", &bad).is_err(), "{bad}");
+        assert_eq!(s.doc, before, "{bad}: a refused suppress changes nothing");
+    }
+}
+
 /// A field the feature's definition doesn't have is refused with the fields it does have,
 /// instead of reporting success and changing nothing (#1491).
 #[test]
@@ -976,19 +1096,22 @@ fn renaming_a_feature_evaluates_nothing() {
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(labels(&s), renamed);
     assert_eq!(s.evaluations, 0, "undo and redo of a rename evaluate nothing");
-    // A sketch on the plane names it: renaming the plane renames it there too, which is evaluated.
+    // A sketch on the plane names it by id (#1134): renaming the plane changes no reference,
+    // so it now evaluates nothing — the name follows everywhere without a rebuild.
     run(&mut s, "sketch.create", json!({"plane": "Shelf", "name": "Top"}));
     run(&mut s, "sketch.finish", json!({}));
     s.evaluations = 0;
     run(&mut s, "timeline.rename", json!({"feature": "Shelf", "name": "Ledge"}));
-    assert!(s.evaluations > 0);
+    assert_eq!(s.evaluations, 0, "renaming a plane a sketch is built on evaluates nothing");
     assert!(labels(&s).2.contains(&"Ledge".to_string()));
-    // A failed pattern's error quotes its source's name: renaming the source is evaluated, so
-    // the error names it as an evaluation does.
+    // A failed pattern's error quotes its source's name (the seed is keyed by id, #1134, and
+    // the error is rendered from the source feature at evaluation): renaming the source is
+    // evaluated, so the error names it as an evaluation does.
     run(&mut s, "solid.pattern.rectangular", json!({"features": ["Base plate"], "dir1": [0, 0, 1], "count1": 2, "spacing1": 10, "name": "Copies"}));
     let copies = s.doc.find_feature("Copies").unwrap().id;
+    let top = s.doc.find_feature("Top").unwrap().id;
     if let Some(solidcraft_doc::FeatureKind::Pattern { features, .. }) = s.doc_mut().feature_mut(copies).map(|f| &mut f.kind) {
-        *features = vec!["Top".into()];
+        *features = vec![top.into()];
     }
     s.refresh();
     let failed = |s: &Session| s.model.results.iter().filter_map(|r| r.error.clone()).collect::<Vec<_>>();
@@ -1030,11 +1153,13 @@ fn renaming_a_plane_keeps_its_projections_canvases_and_hidden_state() {
         r["points"].as_array().unwrap().iter().find(|p| p["link"] == "j1").unwrap()["world"][2].as_f64().unwrap()
     };
     let warnings = |s: &Session| s.model.results.iter().filter_map(|r| r.warning.clone()).collect::<Vec<_>>();
+    // The canvas keeps its plane by id (#1134): the rename leaves the reference alone.
+    let shelf = s.doc.find_feature("Shelf").unwrap().id;
     run(&mut s, "select.set", json!({"items": [{"type": "plane", "name": "Shelf"}]}));
     run(&mut s, "timeline.rename", json!({"feature": "Shelf", "name": "Ledge"}));
     run(&mut s, "timeline.rename", json!({"feature": "Guide", "name": "Rail"}));
     assert_eq!(plane_link(&s), "Ledge");
-    assert_eq!(canvas_plane(&s), solidcraft_doc::PlaneRef::Construction { name: "Ledge".into() });
+    assert_eq!(canvas_plane(&s), solidcraft_doc::PlaneRef::Construction { feature: shelf.into() });
     assert_eq!(s.visibility.hidden_origin, ["Rail"]);
     assert_eq!(s.selection, [Sel::Plane { name: "Ledge".into() }]);
     assert!(warnings(&s).is_empty(), "{:?}", warnings(&s));
@@ -1047,7 +1172,7 @@ fn renaming_a_plane_keeps_its_projections_canvases_and_hidden_state() {
         run(&mut s, "edit.undo", json!({}));
     }
     assert_eq!(plane_link(&s), "Shelf");
-    assert_eq!(canvas_plane(&s), solidcraft_doc::PlaneRef::Construction { name: "Shelf".into() });
+    assert_eq!(canvas_plane(&s), solidcraft_doc::PlaneRef::Construction { feature: shelf.into() });
     assert_eq!(s.visibility.hidden_origin, ["Guide"], "the hidden plane stays hidden");
     assert!(warnings(&s).is_empty(), "{:?}", warnings(&s));
     assert!((projected_z(&mut s) - 20.0).abs() < 1e-9);

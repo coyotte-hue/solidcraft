@@ -72,6 +72,7 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "solid.cylinder", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.sphere", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.torus", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "solid.cone", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.coil", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.combine", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
 ];
@@ -344,6 +345,8 @@ crate::dialog_descriptor::dialog_descriptors! {
             /// Delete a feature that others depend on.
             ConfirmDelete {
                 features: Vec<u64>,
+                /// Timeline folders deleted with the features.
+                groups: Vec<u64>,
                 with: Vec<String>,
                 fail: Vec<String>,
             },
@@ -361,6 +364,8 @@ crate::dialog_descriptor::dialog_descriptors! {
                 dashed: bool,
                 tolerance: f64,
             },
+            /// Insert SVG / DXF: where the picked drawing goes (`dialogs_insert_drawing`).
+            InsertDrawing(crate::dialogs_insert_drawing::Place),
             /// Plastic features (`dialogs_plastic`).
             Plastic(crate::dialogs_plastic::Pl),
             /// Frame members (`dialogs_frame`).
@@ -742,6 +747,37 @@ impl Dialog {
         Dialog::new(Kind::ChatContext, inputs)
     }
 
+    /// A component picked in the browser is not a body selection. A command that takes bodies,
+    /// Move/Copy included, still starts with that component's bodies.
+    fn take_component_bodies(app: &SolveApp, d: &mut Dialog) {
+        if app.tree.picked_components.is_empty() {
+            return;
+        }
+        let mut names = Vec::new();
+        for id in &app.tree.picked_components {
+            for name in crate::browser::bodies_of_component(app, *id) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        let Some(inp) = d.inputs.iter_mut().find(|i| i.accept == BODIES && (i.multi || i.items.is_empty())) else {
+            return;
+        };
+        for name in names {
+            let body = Sel::Body { name };
+            if !inp.multi {
+                if inp.items.is_empty() {
+                    inp.items.push(body);
+                }
+                break;
+            }
+            if !inp.items.contains(&body) {
+                inp.items.push(body);
+            }
+        }
+    }
+
     pub fn for_command(app: &SolveApp, id: &str) -> Option<Dialog> {
         let s = &app.session;
         let has_bodies = !s.world_state().bodies.is_empty();
@@ -919,6 +955,19 @@ impl Dialog {
                 },
                 vec![],
             ),
+            "solid.cone" => Dialog::new(
+                Kind::Primitive {
+                    cmd: "solid.cone",
+                    fields: vec![
+                        ("diameter", length_default(s, "20")),
+                        ("top_diameter", length_default(s, "0")),
+                        ("height", length_default(s, "20")),
+                    ],
+                    operation: 0,
+                    at: None,
+                },
+                vec![],
+            ),
             "solid.coil" => Dialog::new(
                 Kind::Primitive {
                     cmd: "solid.coil",
@@ -982,6 +1031,27 @@ impl Dialog {
                 }
                 continue;
             }
+            // A selected component is its bodies when the command takes bodies. One selected
+            // placement still starts component Move before this dialog is built.
+            if let Sel::Occurrence { path } = sel
+                && let Some(inp) = d.inputs.iter_mut().find(|i| i.accept == BODIES && (i.multi || i.items.is_empty()))
+            {
+                if let Ok(names) = s.occurrence_bodies(path, true) {
+                    for name in names {
+                        let body = Sel::Body { name };
+                        if !inp.multi {
+                            if inp.items.is_empty() {
+                                inp.items.push(body);
+                            }
+                            break;
+                        }
+                        if !inp.items.contains(&body) {
+                            inp.items.push(body);
+                        }
+                    }
+                }
+                continue;
+            }
             // Planar-only inputs take planar faces only.
             let planar_ok = match sel {
                 Sel::Face { body, index, .. } => planar_face(s, body, *index).is_some(),
@@ -1015,6 +1085,7 @@ impl Dialog {
                 }
             }
         }
+        Self::take_component_bodies(app, &mut d);
         // A primitive goes where a face or vertex is picked, standing on a planar face.
         if let Kind::Primitive { at, .. } = &mut d.kind {
             *at = s.selection.iter().find_map(|sel| match sel {
@@ -1063,11 +1134,11 @@ impl Dialog {
 
     #[cfg(test)]
     pub fn confirm_delete(feature: u64, with: Vec<String>, fail: Vec<String>) -> Dialog {
-        Dialog::confirm_delete_many(vec![feature], with, fail)
+        Dialog::confirm_delete_many(vec![feature], Vec::new(), with, fail)
     }
 
-    pub fn confirm_delete_many(features: Vec<u64>, with: Vec<String>, fail: Vec<String>) -> Dialog {
-        Dialog::new(Kind::ConfirmDelete { features, with, fail }, vec![])
+    pub fn confirm_delete_many(features: Vec<u64>, groups: Vec<u64>, with: Vec<String>, fail: Vec<String>) -> Dialog {
+        Dialog::new(Kind::ConfirmDelete { features, groups, with, fail }, vec![])
     }
 
     pub fn edit_param(s: &Session, name: &str) -> Dialog {
@@ -1104,7 +1175,7 @@ impl Dialog {
             Kind::SketchModify(k) => return k.previews(),
             Kind::Plastic(k) => return k.previews(),
             Kind::Frame(_) => return true,
-            Kind::Part(_) | Kind::PartSize(_) => return true,
+            Kind::Part(_) | Kind::PartSize(_) | Kind::InsertDrawing(_) => return true,
             // Web previews run synchronously; a modelled thread can take seconds.
             Kind::Thread { .. } => return !cfg!(target_arch = "wasm32") && self.extra.get("modeled").and_then(Value::as_bool).unwrap_or(false),
             _ => {}
@@ -1471,6 +1542,17 @@ impl Dialog {
         }
         if !inp.multi && !inp.items.is_empty() && self.active + 1 < self.inputs.len() {
             self.advance();
+        }
+        // Move by points or about an axis: once a body is in, go on to the empty From, Point or
+        // Axis (#6170), so the next click picks it instead of another body. Free Move's Pivot is
+        // optional and stays unvisited.
+        if let Kind::Move { mode: crate::dialogs_move::ROTATE | crate::dialogs_move::POINT_TO_POINT | crate::dialogs_move::POINT_TO_POSITION, .. } =
+            self.kind
+            && self.active == 0
+            && self.inputs.first().is_some_and(|i| !i.items.is_empty())
+            && self.inputs.get(1).is_some_and(|i| i.items.is_empty())
+        {
+            self.active = 1;
         }
         self.error = None;
         self.sync_thread(s);
@@ -1887,6 +1969,17 @@ pub fn planar_face(s: &Session, body: &str, face: usize) -> Option<(Vec3, Vec3)>
     found
 }
 
+/// The fillet or chamfer feature whose blend a body face is (a piece or copy of one too).
+pub fn blend_feature(s: &Session, body: &str, face: usize) -> Option<u64> {
+    use solidcraft_engine::doc::persistent_name;
+    let st = s.world_state();
+    let b = st.body(body)?;
+    let names = solidcraft_engine::doc::naming::face_names(b);
+    let name = names.get(face).filter(|n| persistent_name::is_blend(n))?;
+    let f = s.doc.feature(persistent_name::made_by(name)?)?;
+    matches!(f.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. }).then_some(f.id)
+}
+
 thread_local! {
     /// The planar faces looked up last, with the model state they were found in (kept, so the
     /// pointer stays its own). Each lookup tessellates the whole body, about 0.1 s for an
@@ -1974,6 +2067,7 @@ fn title(k: &Kind) -> &'static str {
             "solid.cylinder" => "CYLINDER",
             "solid.sphere" => "SPHERE",
             "solid.coil" => "COIL",
+            "solid.cone" => "CONE",
             _ => "TORUS",
         },
         Kind::Combine { .. } => "COMBINE",
@@ -1985,6 +2079,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Surface(k) => k.title(),
         Kind::SaveMesh(_) => "SAVE AS MESH",
         Kind::ViewDxf { .. } => "Export Current View as DXF",
+        Kind::InsertDrawing(p) => crate::dialogs_insert_drawing::title(p),
         Kind::Plastic(k) => k.title(),
         Kind::Frame(_) => "FRAME MEMBER",
         Kind::Appearance(_) => "APPEARANCE",
@@ -2623,12 +2718,15 @@ fn picked_side(app: &SolveApp, d: &Dialog, first: &Sel) -> Option<usize> {
     Some(crate::smart_extrude::picked_direction(crate::smart_extrude::view_ray(&app.cam, at), normal, false))
 }
 
-/// Show the sketch of the Extrude or Revolve the open dialog edits, and only while it is open:
-/// whichever way the dialog closed (OK, Cancel, another tool, another design), the sketch
-/// returns to its own visibility.
+/// Show the sketch of the Extrude, Revolve or sheet metal base or contour flange the open dialog
+/// edits, and only while it is open: whichever way the dialog closed (OK, Cancel, another tool,
+/// another design), the sketch returns to its own visibility.
 pub(crate) fn sync_feature_edit_sketch(app: &mut SolveApp) {
     app.session.feature_edit_sketch = app.dialog.as_ref().and_then(|d| d.editing).and_then(|(id, _)| match &app.session.doc.feature(id)?.kind {
-        FeatureKind::Extrude { sketch, .. } | FeatureKind::Revolve { sketch, .. } => Some(**sketch),
+        FeatureKind::Extrude { sketch, .. }
+        | FeatureKind::Revolve { sketch, .. }
+        | FeatureKind::SheetBase { sketch, .. }
+        | FeatureKind::SheetContour { sketch, .. } => Some(**sketch),
         _ => None,
     });
 }
@@ -2814,6 +2912,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
             let body = |ui: &mut egui::Ui| {
                 d.sync_fillet_chain(&app.session);
+                crate::hole_presets::rows(ui, &mut d, &mut app.preferences.hole_presets, &app.session.doc, reset_scroll);
                 let (accepted, fields) = crate::ui_kit::value_fields(ctx, || dense::rows(app, ctx, &mut d, ui));
                 enter |= accepted;
                 value_fields = fields;
@@ -2897,6 +2996,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         d.value_focus = ctx.memory(|memory| memory.focused()).filter(|id| value_fields.iter().any(|(field, _)| field == id));
     }
+    let preset_prompt = crate::hole_presets::name_prompt(ctx, &mut d, &mut app.preferences.hole_presets, &app.session.doc);
+    if preset_prompt {
+        enter = false;
+        ok = false;
+        cancel = false;
+    }
     // Keyboard: Enter applies (from a value field, or with nothing focused), Esc cancels.
     let (enter_free, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     let nothing_focused = ctx.memory(|m| m.focused().is_none());
@@ -2906,10 +3011,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         && !matches!(&d.kind, Kind::Motion(k) if k.wide())
         && !matches!(&d.kind, Kind::Material { editor, .. } if editor.editing());
     let report_active = app.issue_report.draft.is_some();
-    if !report_active && enter_applies && app.applying.is_none() && (enter || canvas_enter || (enter_free && nothing_focused)) {
+    if !preset_prompt && !report_active && enter_applies && app.applying.is_none() && (enter || canvas_enter || (enter_free && nothing_focused)) {
         ok = true;
     }
-    if !report_active && esc && !app.esc_handled {
+    if !preset_prompt && !report_active && esc && !app.esc_handled {
         app.esc_handled = true;
         cancel = true;
     }
@@ -3126,6 +3231,14 @@ fn to_object_on(inputs: &[SelInput]) -> bool {
 /// Add or remove the To Object input; the active input moves to it when it is added.
 fn set_to_object(inputs: &mut Vec<SelInput>, active: &mut usize, on: bool) {
     set_object(inputs, active, TO_OBJECT, on);
+}
+
+/// A personal preset remembers the extent mode, never its destination geometry.
+pub(crate) fn preset_to_object(d: &mut Dialog, on: bool) {
+    set_to_object(&mut d.inputs, &mut d.active, on);
+    if let Some(input) = d.inputs.iter_mut().find(|input| input.label == TO_OBJECT) {
+        input.items.clear();
+    }
 }
 
 fn set_object(inputs: &mut Vec<SelInput>, active: &mut usize, label: &'static str, on: bool) {
@@ -4341,7 +4454,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     "solid.box" => {
                         p.insert("corner".into(), box_corner(s, fields, point, normal));
                     }
-                    "solid.cylinder" | "solid.coil" => {
+                    "solid.cylinder" | "solid.coil" | "solid.cone" => {
                         p.insert("base".into(), pt(point));
                         if let Some(n) = normal {
                             p.insert("axis".into(), pt(n));
@@ -4378,7 +4491,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         }
         Kind::EditParam { name, expr } => ("parameters.change", json!({"name": name, "expression": expr})),
         Kind::Rename { feature, name } => ("timeline.rename", json!({"feature": feature, "name": name})),
-        Kind::ConfirmDelete { features, .. } => ("timeline.delete", json!({ "features": features })),
+        Kind::ConfirmDelete { features, groups, .. } => ("timeline.delete", crate::timeline::delete_params(features, groups)),
         Kind::Sketch | Kind::Measure { .. } => return Ok(Vec::new()),
         Kind::Assembly(k) => return crate::dialogs_assembly::commands(app, k, &d.inputs),
         Kind::Sheet(k) => return crate::dialogs_sheet::commands(app, k, &d.inputs, &d.extra),
@@ -4386,6 +4499,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         Kind::SketchModify(k) => return crate::sketch_modify_ui::commands(app, k, &d.inputs, &d.extra),
         Kind::SaveMesh(k) => return crate::dialogs_save_mesh::commands(k, &d.inputs),
         Kind::ViewDxf { .. } => return Ok(Vec::new()),
+        Kind::InsertDrawing(p) => return crate::dialogs_insert_drawing::commands(p),
         Kind::Plastic(k) => return crate::dialogs_plastic::commands(app, k, &d.inputs, &d.extra),
         Kind::Frame(k) => return crate::dialogs_frame::commands(app, k, &d.inputs, &d.extra),
         Kind::Appearance(k) => return Ok(crate::dialogs_appearance::commands(k, &d.inputs)),
@@ -4950,7 +5064,7 @@ fn geo_sel(s: &Session, g: &solidcraft_engine::doc::construct::GeoRef) -> Option
 pub(crate) fn plane_sel(s: &Session, pl: &PlaneRef) -> Option<Sel> {
     match pl {
         PlaneRef::Origin { name } => Some(Sel::Plane { name: name.clone() }),
-        PlaneRef::Construction { name } => Some(Sel::Plane { name: name.to_string() }),
+        PlaneRef::Construction { feature } => s.doc.feature(feature.0).map(|f| Sel::Plane { name: f.name.clone() }),
         PlaneRef::Custom { plane } => face_sel(s, plane.origin),
         // The point picked on the face: the plane's origin can lie off the face (#3567).
         PlaneRef::Face { at, .. } => face_sel(s, *at),
@@ -5402,6 +5516,22 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
+        FeatureKind::Cone { base, axis, radius, top_radius, height, operation } => {
+            let mut d = start("solid.cone")?;
+            d.kind = Kind::Primitive {
+                cmd: "solid.cone",
+                fields: vec![
+                    ("radius", stored_length(s, radius)),
+                    ("top_radius", stored_length(s, top_radius)),
+                    ("height", stored_length(s, height)),
+                ],
+                operation: op_index(operation),
+                at: None,
+            };
+            d.extra.insert("base".into(), pt_expr(base));
+            d.extra.insert("axis".into(), pt3(axis.0));
+            d
+        }
         FeatureKind::BoundaryFill { tools, cells, operation, remove_tools } => {
             let mut d = start("solid.boundary_fill")?;
             // The cells again, ticked where a stored cell point lies in the same cell.
@@ -5436,7 +5566,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
         }
         FeatureKind::Mirror { features, plane, bodies, placements, .. } => {
             let mut d = start("solid.mirror")?;
-            let ids: Vec<u64> = features.iter().filter_map(|n| s.doc.find_feature(n).map(|f| f.id)).collect();
+            let ids: Vec<u64> = features.iter().map(|f| f.0).collect();
             // Replay references stay features, including features that created a body.
             let as_features = !features.is_empty();
             if let Some(inp) = d.inputs.get_mut(0) {
@@ -5462,7 +5592,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             d
         }
         FeatureKind::Pattern { features, pattern, bodies: copied } => {
-            let ids: Vec<u64> = features.iter().filter_map(|n| s.doc.find_feature(n).map(|f| f.id)).collect();
+            let ids: Vec<u64> = features.iter().map(|f| f.0).collect();
             let bodies: Vec<Sel> = if copied.is_empty() {
                 st.bodies.iter().filter(|b| ids.contains(&b.feature)).map(|b| Sel::Body { name: b.name.clone() }).collect()
             } else {
