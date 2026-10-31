@@ -74,9 +74,10 @@ fn fillet_and_chamfer_corners() {
     let e = s.execute("sketch.chamfer.equal_distance", &json!({"a": c[0], "b": c[1], "distance": 25})).unwrap_err().to_string();
     assert!(e.contains("too large") || e.contains("does not fit") || e.contains("longer"), "{e}");
     assert_eq!(sk(&s).curves.len(), n);
-    // A line meeting an arc, and two arcs (a slot's end rounded into a line).
+    // A line meeting an arc at a corner (down onto its top), and two arcs (a slot's end rounded
+    // into a line).
     let mut s = new_sketch();
-    let l = curves(&run(&mut s, "sketch.line", json!({"points": [[-20, 10], [0, 10]]})))[0].clone();
+    let l = curves(&run(&mut s, "sketch.line", json!({"points": [[0, 20], [0, 10]]})))[0].clone();
     let a = curves(&run(&mut s, "sketch.arc.three_point", json!({"start": format!("{l}.end"), "end": [10, 0], "through": [7.0710678, 7.0710678]})))
         [0]
     .clone();
@@ -95,6 +96,58 @@ fn fillet_and_chamfer_corners() {
     run(&mut s, "sketch.chamfer.equal_distance", json!({"a": c[0], "b": c[1], "distance": 4}));
     assert!(solved(&s));
     assert!((area(&s) - (a0 - 8.0)).abs() < 1e-6, "{}", area(&s));
+}
+
+/// A chamfer where the two lines have no corner is refused, as a fillet there is: two lines
+/// lying on each other made a chamfer line of no length between their cut-back ends (found by a
+/// local trim fuzzer), and two lines in line with each other have no corner either.
+#[test]
+fn a_chamfer_where_two_lines_lie_in_line_is_refused() {
+    for far in [[0, 10], [0, 30]] {
+        let mut s = new_sketch();
+        let a = curves(&run(&mut s, "sketch.line", json!({"points": [[0, 0], [0, 20]], "infer": false})))[0].clone();
+        let b = curves(&run(&mut s, "sketch.line", json!({"points": [far, [0, 20]], "infer": false, "connect": false})))[0].clone();
+        run(&mut s, "sketch.constraint.coincident", json!({"a": format!("{a}.end"), "b": format!("{b}.end")}));
+        let n = sk(&s).curves.len();
+        for cmd in ["sketch.chamfer.equal_distance", "sketch.fillet"] {
+            let p = if cmd == "sketch.fillet" { json!({"a": a, "b": b, "radius": 2}) } else { json!({"a": a, "b": b, "distance": 2}) };
+            let e = s.execute(cmd, &p).unwrap_err().to_string();
+            assert!(e.contains("parallel"), "{cmd} at {far:?}: {e}");
+            assert_eq!(sk(&s).curves.len(), n, "{cmd} at {far:?}");
+        }
+    }
+}
+
+/// A round that would use up a whole arc is refused, as one too large for two lines is: a
+/// quarter arc of radius 5 running into a line along it, rounded with radius 5, was left as an
+/// arc of no length (found by a local trim fuzzer).
+#[test]
+fn a_fillet_that_would_use_up_an_arc_is_refused() {
+    let mut s = new_sketch();
+    // Centre (15, 5): from (10, 5) down to (15, 0), where the line along y = 0 leaves it.
+    let through = [15.0 - 2.5 * 2f64.sqrt(), 5.0 - 2.5 * 2f64.sqrt()];
+    let a = curves(&run(&mut s, "sketch.arc.three_point", json!({"start": [10, 5], "end": [15, 0], "through": through})))[0].clone();
+    let l = curves(&run(&mut s, "sketch.line", json!({"points": [format!("{a}.end"), [-35, 0]], "infer": false})))[0].clone();
+    let n = sk(&s).curves.len();
+    let e = s.execute("sketch.fillet", &json!({"a": a, "b": l, "radius": 5})).unwrap_err().to_string();
+    assert!(e.contains("does not fit"), "{e}");
+    assert_eq!(sk(&s).curves.len(), n);
+}
+
+/// A round where a line runs on along an arc's end, off only by rounding, is refused: there is no
+/// corner, and the round came out as an arc about 1e-7 mm long (found by a local trim fuzzer,
+/// after earlier rounds left the line a hair off the arc's tangent).
+#[test]
+fn a_fillet_where_a_line_runs_on_smoothly_from_an_arc_is_refused() {
+    let mut s = new_sketch();
+    let h = 0.5 * 2f64.sqrt();
+    let a = curves(&run(&mut s, "sketch.arc.three_point", json!({"start": [1, 0], "end": [0, 1], "through": [h, h]})))[0].clone();
+    // Off the arc's tangent at (0, 1) by 1e-7 rad.
+    let l = curves(&run(&mut s, "sketch.line", json!({"points": [format!("{a}.end"), [-10, 1.000001]], "infer": false})))[0].clone();
+    let n = sk(&s).curves.len();
+    let e = s.execute("sketch.fillet", &json!({"a": a, "b": l, "radius": 5})).unwrap_err().to_string();
+    assert!(e.contains("smoothly") || e.contains("does not fit"), "{e}");
+    assert_eq!(sk(&s).curves.len(), n);
 }
 
 /// The ids of the constraints driven by the model parameter `name`.
@@ -243,4 +296,64 @@ fn a_fillet_of_a_nearly_straight_or_folded_corner_with_dimensions_does_not_panic
         }
         assert!(sk(&s).points.iter().all(|p| p.pos.is_finite()));
     }
+}
+
+/// Two lines that share no end are brought to where they meet before the corner is rounded or
+/// cut (#6912, #7759, #7985). A line that stops short is extended, and one that runs past the
+/// other is cut there, losing its shorter piece; the far ends stay. Parallel lines, an end held
+/// by other geometry and a dimensioned length are refused, and change nothing.
+#[test]
+fn a_fillet_or_chamfer_brings_two_separate_lines_to_where_they_meet() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    let lines = |s: &mut Session, a: [[f64; 2]; 2], b: [[f64; 2]; 2]| {
+        let la = curves(&run(s, "sketch.line", json!({"points": a, "connect": false})))[0].clone();
+        let lb = curves(&run(s, "sketch.line", json!({"points": b, "connect": false})))[0].clone();
+        (la, lb)
+    };
+    let ends = |s: &Session, id: &str| {
+        let k = sk(s);
+        let CurveKind::Line { a, b } = k.curves[k.curve_index(id).unwrap()].kind else { panic!("{id} is a line") };
+        (k.point(a).unwrap(), k.point(b).unwrap())
+    };
+    let near = |q: Vec2, x: f64, y: f64| q.dist(Vec2::new(x, y)) < 1e-6;
+    // Stopping short of each other (a gap), and crossing with a short piece past the corner.
+    for (a, b) in [([[0.0, 0.0], [10.0, 0.0]], [[20.0, 5.0], [20.0, 20.0]]), ([[0.0, 0.0], [24.0, 0.0]], [[20.0, -4.0], [20.0, 20.0]])] {
+        let mut s = new_sketch();
+        let (la, lb) = lines(&mut s, a, b);
+        let r = run(&mut s, "sketch.fillet", json!({"a": la, "b": lb, "radius": 3}));
+        assert!(solved(&s), "{r}");
+        let k = sk(&s);
+        let arc = k.curve_index(&curves(&r)[0]).unwrap();
+        let CurveKind::Arc { c, .. } = k.curves[arc].kind else { panic!("an arc") };
+        assert!(near(k.point(c).unwrap(), 17.0, 3.0), "{:?}", k.point(c));
+        let ((a0, a1), (b0, b1)) = (ends(&s, &la), ends(&s, &lb));
+        assert!(near(a0, 0.0, 0.0) && near(a1, 17.0, 0.0), "{la}: {a0:?} {a1:?}");
+        assert!(near(b0, 20.0, 3.0) && near(b1, 20.0, 20.0), "{lb}: {b0:?} {b1:?}");
+        assert_eq!(k.curves.len(), 3, "the two lines and the arc, nothing left past the corner");
+        assert!(k.points.iter().all(|q| !near(q.pos, 24.0, 0.0) && !near(q.pos, 20.0, -4.0) && !near(q.pos, 20.0, 0.0)), "{:?}", k.points);
+    }
+    // A chamfer the same way.
+    let mut s = new_sketch();
+    let (la, lb) = lines(&mut s, [[0.0, 0.0], [10.0, 0.0]], [[20.0, 5.0], [20.0, 20.0]]);
+    run(&mut s, "sketch.chamfer.equal_distance", json!({"a": la, "b": lb, "distance": 4}));
+    assert!(solved(&s));
+    let ((_, a1), (b0, _)) = (ends(&s, &la), ends(&s, &lb));
+    assert!(near(a1, 16.0, 0.0) && near(b0, 20.0, 4.0), "{a1:?} {b0:?}");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(sk(&s).curves.len(), 2, "undo brings back the two separate lines");
+
+    // Refused: parallel lines, an end joined to a third line, a dimensioned length.
+    let mut s = new_sketch();
+    let (pa, pb) = lines(&mut s, [[0.0, 0.0], [10.0, 0.0]], [[0.0, 5.0], [10.0, 5.0]]);
+    let (la, lb) = lines(&mut s, [[0.0, 20.0], [10.0, 20.0]], [[20.0, 25.0], [20.0, 40.0]]);
+    run(&mut s, "sketch.line", json!({"points": [format!("{la}.end"), [10, 30]], "connect": false}));
+    let (da, db) = lines(&mut s, [[0.0, 50.0], [10.0, 50.0]], [[20.0, 55.0], [20.0, 70.0]]);
+    run(&mut s, "sketch.dimension", json!({"entities": [da], "value": 10}));
+    let before = sk(&s);
+    for (a, b, why) in [(&pa, &pb, "parallel"), (&la, &lb, "held by other geometry"), (&da, &db, "length is held")] {
+        let e = s.execute("sketch.fillet", &json!({"a": a, "b": b, "radius": 2})).unwrap_err().to_string();
+        assert!(e.contains(why), "{a}, {b}: {e}");
+    }
+    assert_eq!(sk(&s), before, "refusals change nothing");
 }
