@@ -47,8 +47,8 @@ use solidcraft_geom::Vec3;
 
 pub use cmd::settings::{MAX_PROFILE_NAME, profile_name};
 pub use cmd::{
-    Addition, CommandInfo, CommandSpec, addition, auto_operation, command_specs, dimension_roles, extrude_reach, find_command, resolve_design_links,
-    shown_scope, standard_view,
+    Addition, CommandInfo, CommandSpec, OpenSteps, addition, auto_operation, command_specs, dimension_roles, extrude_reach, find_command,
+    resolve_design_links, shown_scope, standard_view,
 };
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
@@ -496,10 +496,15 @@ pub struct Session {
     /// (see [`Session::solve_joints`]).
     joints_settled: Option<(Arc<Document>, std::sync::Weak<solidcraft_doc::ModelState>)>,
     occurrence_visibility_cache: std::sync::Mutex<Option<occurrences::VisibilityCache>>,
-    /// The hidden joints and folders of the view, as sets: the browser asks about every joint
-    /// of the design on every frame (#3892), and an answer that walked the hidden lists made a
-    /// frame cost grow with the size of the design.
+    /// The hidden joints, folders and bodies of the view, as sets: the browser asks about every
+    /// joint of the design on every frame (#3892), the viewport about every body, and an answer
+    /// that walked the hidden lists made a frame cost grow with the size of the design.
     visibility_index_cache: std::sync::Mutex<Option<occurrences::VisibilityIndex>>,
+    /// The sketches a feature uses, with the design they were read from
+    /// ([`view::sketch_consumed`]): the viewport asks about every sketch several times a frame,
+    /// and walking the features for each made that cost grow with sketches times features.
+    /// Keyed on the design itself, so an edit of any kind builds the set again.
+    consumed_sketches_cache: std::sync::Mutex<Option<view::ConsumedSketches>>,
     /// The bodies each feature made, by name, with the state they were read from
     /// ([`Session::pin_body_names`]).
     made_bodies: MadeBodies,
@@ -671,14 +676,23 @@ impl Session {
         // The session keeps what is hidden (an undo step of its own); the design file carries it.
         let visibility = std::mem::take(&mut doc.visibility);
         let doc = Arc::new(doc);
-        let adopted = saved
-            .filter(|_| solidcraft_geom::env::var_os("NO_MODEL_CACHE").is_none())
-            .and_then(|saved| Model::adopt(&doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok());
-        let model = adopted.unwrap_or_else(|| {
+        let model = Self::saved_model(&doc, saved).unwrap_or_else(|| {
             let mut model = Model::new();
             model.evaluate_shared(&doc);
             model
         });
+        Self::with_model(doc, visibility, model)
+    }
+
+    /// The model `doc`'s file kept, when it is `doc`'s evaluation and the cache is not turned off.
+    pub(crate) fn saved_model(doc: &Arc<Document>, saved: Option<&solidcraft_doc::SavedModel>) -> Option<Model> {
+        saved
+            .filter(|_| solidcraft_geom::env::var_os("NO_MODEL_CACHE").is_none())
+            .and_then(|saved| Model::adopt(doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok())
+    }
+
+    /// A session on `doc` evaluated as `model`, with what it hides.
+    pub(crate) fn with_model(doc: Arc<Document>, visibility: Visibility, model: Model) -> Self {
         Session {
             saved: doc.clone(),
             doc,
@@ -712,6 +726,7 @@ impl Session {
             joints_settled: None,
             occurrence_visibility_cache: Default::default(),
             visibility_index_cache: Default::default(),
+            consumed_sketches_cache: Default::default(),
             made_bodies: MadeBodies::new(),
             removed_later_cache: Default::default(),
             occurrence_bodies_cache: Default::default(),
@@ -907,17 +922,45 @@ impl Session {
         }
     }
 
+    /// Let the used sketches' set go before an edit in place: it holds the document weakly, and
+    /// `Arc::make_mut` would move a weakly held document to a new address.
+    fn forget_consumed_sketches(&self) {
+        if let Ok(mut cache) = self.consumed_sketches_cache.lock() {
+            *cache = None;
+        }
+    }
+
     /// Mutable document (copy-on-write).
     pub fn doc_mut(&mut self) -> &mut Document {
-        // The placement index keeps the document alive with its answers; let it go before an
-        // in-place edit, so the edit stays in place (a shared handle would clone the document
-        // to a new address behind the crash journal's back, #7502) and no stale lookup outlives it.
+        self.forget_document_caches();
+        #[cfg(test)]
+        if Arc::strong_count(&self.doc) > 1 {
+            tests::doc_copies::record();
+        }
+        Arc::make_mut(&mut self.doc)
+    }
+
+    /// Make `doc` the design, as `*doc_mut() = doc` does, without first copying a shared
+    /// document only to overwrite the copy: a command's undo step still holds the design it
+    /// started from, so `doc_mut` would copy all of it (every feature and sketch) on each
+    /// sketch drag frame. The design lands at a new address either way, and the command's end
+    /// tells the crash journal that address (#7502).
+    pub(crate) fn set_doc(&mut self, doc: Document) {
+        self.forget_document_caches();
+        self.doc = Arc::new(doc);
+    }
+
+    /// Before the document changes: the placement index keeps the document alive with its
+    /// answers; let it go, so an in-place edit stays in place (a shared handle would clone the
+    /// document to a new address behind the crash journal's back, #7502) and no stale lookup
+    /// outlives it.
+    fn forget_document_caches(&mut self) {
         if let Ok(mut index) = self.placement_index_cache.lock() {
             *index = None;
         }
+        self.forget_consumed_sketches();
         self.forget_dirty_answer();
         self.model.forget_fingerprints();
-        Arc::make_mut(&mut self.doc)
     }
 
     /// Prepared placements only: optional save caches must not compute a cold world.
@@ -1097,16 +1140,19 @@ impl Session {
     /// [`Session::refresh`] after the design changed from `previous`; a change that only renamed
     /// a body or a feature (or undid or redid such a rename) renames it in the model instead,
     /// which keeps every result and mesh (#3044).
-    fn refresh_from(&mut self, previous: &Arc<Document>) {
-        self.follow_plane_renames(previous);
-        self.follow_axis_point_renames(previous);
+    fn refresh_from(&mut self, previous: &Arc<Document>, visibility_restored: bool) {
         let rename = self.body_rename(previous);
-        self.remap_hidden_bodies(previous, &self.model.state(), rename.as_ref().map(|(old, new, _)| (old.as_str(), new.as_str())));
-        // Locked bodies follow the rename here rather than in `body.rename`, so a rename that
-        // reaches the design any other way (undo, an outside edit) is covered too (#9737).
-        if let Some((old, new, _)) = &rename {
-            for b in self.visibility.locked_bodies.iter_mut().filter(|b| **b == *old) {
-                *b = new.clone();
+        // Undo/redo restored visibility in the target document's names already. Remapping
+        // those names again can transfer a deleted body's stale hide to the restored body.
+        if !visibility_restored {
+            self.follow_plane_renames(previous);
+            self.follow_axis_point_renames(previous);
+            self.remap_hidden_bodies(previous, &self.model.state(), rename.as_ref().map(|(old, new, _)| (old.as_str(), new.as_str())));
+            // Locked bodies follow explicit renames and outside edits too (#9737).
+            if let Some((old, new, _)) = &rename {
+                for b in self.visibility.locked_bodies.iter_mut().filter(|b| **b == *old) {
+                    *b = new.clone();
+                }
             }
         }
         if let Some((old, new, names_only)) = rename
@@ -1383,6 +1429,7 @@ impl Session {
             if let Ok(mut index) = self.placement_index_cache.lock() {
                 *index = None;
             }
+            self.forget_consumed_sketches();
             self.forget_dirty_answer();
             self.model.adopt_solved_sketches(Arc::make_mut(&mut self.doc));
         }
@@ -1515,7 +1562,7 @@ impl Session {
                         }
                         None if render_only => self.refresh_render(&previous_doc),
                         None if display_only => self.refresh_display(),
-                        None => self.refresh_from(&previous_doc),
+                        None => self.refresh_from(&previous_doc, matches!(spec.id, "edit.undo" | "edit.redo")),
                     }
                     if pin {
                         self.pin_body_names();
@@ -1678,6 +1725,7 @@ impl Session {
             made_bodies: MadeBodies::new(),
             occurrence_visibility_cache: Default::default(),
             visibility_index_cache: Default::default(),
+            consumed_sketches_cache: Default::default(),
             removed_later_cache: Default::default(),
             occurrence_bodies_cache: Default::default(),
             placement_index_cache: Default::default(),

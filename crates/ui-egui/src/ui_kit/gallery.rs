@@ -171,6 +171,15 @@ const ELEMENTS: &[Element] = &[
         let (viewport, _) = ui.allocate_exact_size(vec2(200.0, 150.0), egui::Sense::hover());
         frame_guides(ui, viewport, viewport.shrink(20.0), FrameGuides { thirds: true, safe_area: true, centre_mark: true });
     }),
+    element!("comparison_divider", |ui, _| {
+        let (rect, _) = ui.allocate_exact_size(vec2(220.0, 100.0), egui::Sense::hover());
+        let mut position = 0.5;
+        comparison_divider(ui, rect, &mut position, "Comparison divider");
+    }),
+    element!("comparison_badge", |ui, _| {
+        let (rect, _) = ui.allocate_exact_size(vec2(220.0, 100.0), egui::Sense::hover());
+        comparison_badge(ui, rect, "Live preview", false);
+    }),
     element!("tree_row_rect", |ui, _| {
         for (index, row) in [
             Row { label: "Objects", ..Default::default() },
@@ -1156,6 +1165,9 @@ const ELEMENTS: &[Element] = &[
     element!("text", "dialog:report:gallery", Some("dialog:report:gallery"), |ui, _| {
         text(ui, "Validation report with retained units: 10 mm", Text::Report("gallery", false));
     }),
+    element!("name_cell_with_hint", "dialog:cell:Width", Some("dialog:cell:Width"), |ui, _| {
+        name_cell_with_hint(ui, "Width", false, "Double-click to rename");
+    }),
     element!("search_field", |ui, s| {
         search_field(ui, ui.id().with("search"), &mut s.value, "Search");
     }),
@@ -1285,6 +1297,25 @@ const ELEMENTS: &[Element] = &[
     element!("searchable_dropdown", "dialog:row:Gallery", Some("dialog:Gallery"), |ui, _| {
         row(ui, "Gallery", |ui| {
             searchable_dropdown(ui, "gallery", "One", &mut String::new(), &[SearchOption { value: "one", label: "One", handle: None }], None, None);
+        });
+    }),
+    element!("search_picker", "dialog:row:Gallery", Some("dialog:Gallery"), |ui, _| {
+        row(ui, "Gallery", |ui| {
+            search_picker(
+                ui,
+                SearchPicker {
+                    id: "gallery_search_picker",
+                    handles: "gallery:search_picker",
+                    current: "One",
+                    current_value: "one",
+                    hint: "Search",
+                    choices: &[SearchChoice { value: "one", label: "One", tip: "", group: None }],
+                    custom: true,
+                    note: None,
+                    open_group: None,
+                    enabled: true,
+                },
+            );
         });
     }),
     element!("text_emphasis", "dialog:row:Gallery", Some("dialog:Bold"), |ui, s| {
@@ -1939,8 +1970,8 @@ fn gallery_covers_every_inline_element() {
                 && matches!(&item.vis, syn::Visibility::Restricted(v) if v.path.is_ident("crate"))
             {
                 let name = item.sig.ident.to_string();
-                // The inherited row label and the eye-drag state key are metadata, not renderable elements.
-                if name != "label" && name != "eye_drag_id" {
+                // Inherited labels, state keys and size measurements do not render elements.
+                if !matches!(name.as_str(), "eye_drag_id" | "label" | "placement_field_content_size") {
                     assert!(names.contains(name.as_str()), "{file}: {name} needs a gallery entry");
                 }
             }
