@@ -3212,10 +3212,25 @@ fn apply_traced_with(
         return Ok(());
     }
     if matches!(op, Operation::Cut | Operation::Intersect) {
+        // A cut that cannot reach a sheet leaves it as it is (#10226): a sheet whose box lies
+        // clear of every tool's, in its own frame, needs no boolean to show it. An intersect
+        // removes the sheets it misses, and checks each one as before.
+        let mut reach: Option<Vec<Option<solidcraft_geom::Aabb3>>> = None;
         for &i in &target_idx {
             if let Some(mb) = state.bodies.get(i).filter(|b| state.sheets.iter().any(|s| s.body == b.name)) {
                 let m = tool_frame(&mb.name);
+                if op == Operation::Cut && m.is_none() && !mb.body.is_mesh() && !tools.iter().any(|t| t.body.is_mesh()) {
+                    let reach = reach.get_or_insert_with(|| tools.iter().map(|t| more::body_box(&t.body)).collect());
+                    if !reach.is_empty()
+                        && let Some(target) = more::mesh_box(mb)
+                        && reach.iter().all(|tool| more::boxes_apart(&Some(target), tool))
+                    {
+                        continue;
+                    }
+                }
                 let bodies: Vec<Body> = tools.iter().map(|t| tool_in(t, m).map(|t| t.body)).collect::<Result<_>>()?;
+                #[cfg(test)]
+                cost_tests::count(|c| c.cut += 1);
                 sheet_boolean_unchanged(&mb.body, &bodies, op)?;
             }
         }
@@ -4650,7 +4665,7 @@ fn hole_spots(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) -> R
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
             let at = hole_on_surface(st, single_hole_position(vals, st, position, at, points)?, dir, &[]);
-            let at = with_references(vals, st, f, at, dir)?;
+            let at = with_references(vals, st, f, at, dir, true)?;
             let dir = hole_dir_into_face(st, at, dir);
             return Ok((vec![hole_on_surface(st, at, dir, &[])], dir));
         }
@@ -4698,7 +4713,7 @@ fn hole_spots_raw(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature) 
         _ => {
             let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
             let p = single_hole_position(vals, st, position, at, points)?;
-            let p = if hole_references(f).is_empty() { p } else { with_references(vals, st, f, hole_on_surface(st, p, dir, &[]), dir)? };
+            let p = if hole_references(f).is_empty() { p } else { with_references(vals, st, f, hole_on_surface(st, p, dir, &[]), dir, false)? };
             Ok((vec![p], hole_dir_into_face(st, hole_on_surface(st, p, dir, &[]), dir)))
         }
     }
@@ -4732,13 +4747,15 @@ fn hole_references(f: &Feature) -> &[crate::HoleReference] {
 /// plane of the flat face at its base, square to its axis.
 fn cylinder_base(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature, base: &crate::PointExpr, axis: Vec3) -> Result<Vec3> {
     let at = point(vals, base)?;
-    with_references(vals, st, f, at, -axis)
+    with_references(vals, st, f, at, -axis, true)
 }
 
 /// Where a Single hole (or a cylinder) with reference edges (#37) is placed: at its distances
 /// from the edges' lines, in the plane of the face at `at` (on the surface), the edges found by
-/// their names, else their points. A feature without reference edges stays at `at`.
-fn with_references(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature, at: Vec3, dir: Vec3) -> Result<Vec3> {
+/// their names, else their points. A feature without reference edges stays at `at`. With
+/// `on_face` the centre must lie on that face; a pattern or mirror replaying a hole that is
+/// already drilled finds its centre in the opening and doesn't ask (#8055).
+fn with_references(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature, at: Vec3, dir: Vec3, on_face: bool) -> Result<Vec3> {
     let references = hole_references(f);
     if references.is_empty() {
         return Ok(at);
@@ -4750,7 +4767,7 @@ fn with_references(vals: &BTreeMap<String, Value>, st: &ModelState, f: &Feature,
     let edges: Vec<(Vec3, Option<&str>)> = references.iter().enumerate().map(|(i, r)| (r.edge.0, f.edge_names.get(i).map(String::as_str))).collect();
     let frame = crate::hole_reference::reference_frame(st, at, dir, &edges, false)?;
     let centre = frame.place(at, &distances)?;
-    if !crate::hole_reference::on_reference_face(st, &frame, centre) {
+    if on_face && !crate::hole_reference::on_reference_face(st, &frame, centre) {
         return Err(DocError::Invalid("the reference distances put the hole's centre off its face".into()));
     }
     Ok(centre)
@@ -4775,6 +4792,16 @@ fn parallel_tapped_wall(st: &ModelState, entry: Vec3, inward: Vec3, radius: f64)
     let tol = (radius * 1e-6).max(1e-6);
     let mut best: Option<(f64, Vec3)> = None;
     for body in &st.bodies {
+        // A wall found lies on the line through `entry` along `inward`, give or take its radius
+        // (and the slant its axis may have off `inward` over the body's distance), and its
+        // triangles are among the body's mesh: a body whose box that line misses by more holds
+        // none, and its faces are not read one by one (#10227).
+        let far = more::mesh_box(body).map_or(f64::INFINITY, |b| (b.min - entry).len().max((b.max - entry).len()) + b.diagonal());
+        if far.is_finite() && more::line_beyond_reach(body, entry, inward, radius * 1.01 + tol + 1e-3 + 2e-4 * far) {
+            continue;
+        }
+        #[cfg(test)]
+        cost_tests::count(|c| c.tapped_wall += 1);
         let mesh = body.mesh();
         for face in 0..body.body.face_count() {
             let Some(c) = kernel::cylinder_face(&body.body, &mesh, face) else { continue };
@@ -4868,11 +4895,17 @@ fn sheet_hole_cut(
             _ => done,
         };
         if done.is_empty() {
+            // A sheet whose box lies clear of the tool's cannot meet it (#10226).
+            let reach = more::body_box(tool);
             let mut meets = false;
             for sheet in &st.sheets {
-                if let Some(mb) = st.body(&sheet.body)
-                    && kernel::boolean(&mb.body, tool, BoolOp::Intersect)?.is_some()
-                {
+                let Some(mb) = st.body(&sheet.body) else { continue };
+                if more::boxes_apart(&more::mesh_box(mb), &reach) {
+                    continue;
+                }
+                #[cfg(test)]
+                cost_tests::count(|c| c.cut += 1);
+                if kernel::boolean(&mb.body, tool, BoolOp::Intersect)?.is_some() {
                     meets = true;
                     break;
                 }
@@ -5026,12 +5059,22 @@ fn hole_tools_and_prisms(
             if !(rc > r && half > 1e-3 && half < std::f64::consts::FRAC_PI_2) {
                 return Err(DocError::Invalid("the countersink must be wider than the hole".into()));
             }
-            // Cone from above the face to just inside the hole radius, then the hole.
-            let r_top = rc + top * half.tan();
+            // One revolved tool: the cone from just above the face to just inside the hole
+            // radius, and above it a cylinder of the countersink's own diameter up to the run-on
+            // height. A cone started at the run-on height is wider than the countersink above
+            // the face and notches a wall or step next to the hole (#5041). The cone is the
+            // profile's first segment, so its face keeps the name `csink:side:0`.
+            let lift = top / 20.0;
+            let r_rim = rc + lift * half.tan();
             let r_end = r * 0.9;
-            let len = (r_top - r_end) / half.tan();
-            let top_plane = plane.offset(top);
-            tools.push((crate::lineage::part_tool(kernel::extrude_tapered(&top_plane, &disc(r_top), len, -1.0, -half)?, "csink"), None));
+            let low = lift - (r_rim - r_end) / half.tan();
+            let up = -dir;
+            let rp = Plane::new(*position, up.any_perp(), up).ok_or_else(|| DocError::Invalid("hole axis".into()))?;
+            let pts = [Vec2::new(r_rim, lift), Vec2::new(r_end, low), Vec2::new(0.0, low), Vec2::new(0.0, top), Vec2::new(r_rim, top)];
+            let region = Region2 { outer: solidcraft_geom::Loop2::polygon(&pts), holes: vec![] };
+            for tool in kernel::revolve(&rp, &[region], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU)? {
+                tools.push((crate::lineage::part_tool(tool, "csink"), None));
+            }
             tools.extend(bore(tip_angle.as_ref())?);
         }
     }
@@ -5380,8 +5423,9 @@ fn feature_tools_with_constructor(
             let name = |k: usize| f.face_names.get(k).map(String::as_str);
             let (to_name, from_name) = if extent.to.is_some() { (name(0), name(1)) } else { (None, name(0)) };
             let to_face = extent.to.and_then(|p| object_face(&tst, to_name, p.0, Some(n)));
-            // The body the extent runs to: a Join to it joins that body too (#6424).
-            *to_body = to_face.and_then(|(bi, _)| tst.bodies.get(bi)).map(|b| b.name.clone());
+            // The body the extent runs to: a Join to it joins that body too (#6424), unless the
+            // design was built before it did (#8151).
+            *to_body = to_face.filter(|_| !extent.to_body_apart).and_then(|(bi, _)| tst.bodies.get(bi)).map(|b| b.name.clone());
             let centre = {
                 let pts: Vec<Vec2> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
                 let c = pts.iter().fold(Vec2::default(), |a, p| a + *p) * (1.0 / pts.len().max(1) as f64);
@@ -5713,7 +5757,9 @@ fn feature_tools_with_constructor(
                 let start = if hi > 0.0 { lo + off } else { hi + off };
                 tools = trim_to_body(tools, tb, |q: Vec3| ((q - ss.plane.origin).dot(n) - start).abs())?;
             }
-            if untrimmed {
+            // A join's profile grows into the material it joins; its sketch plane and depth as drawn
+            // still serve a join into sheet metal (`sheet_join`), which takes the sketch's regions.
+            if untrimmed || (*operation == Operation::Join && curved.is_none()) {
                 *constructor = Some(ExtrudeConstructor { plane: ss.plane, interval: (lo + off, hi + off) });
             }
             // A Join tool's faces outlive the boolean where they stay on the result, so they are
@@ -7623,6 +7669,14 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 let handled = more::sheet_cut(f, st, &bodies, &crate::plain(targets), constructor.as_ref(), warning)?;
                 if !handled.is_empty() {
                     return apply_beside_sheet_cut(doc, st, f, tools, *operation, &crate::plain(targets), &handled);
+                }
+            }
+            // A join one sheet thick in the plane of a panel becomes part of that panel. A Join to an
+            // object (#6424) is left to the generic path below, which joins the object as well.
+            if *operation == Operation::Join && to_body.is_none() && matches!(f.kind, FeatureKind::Extrude { .. }) && !st.sheets.is_empty() {
+                let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
+                if !more::sheet_join(f, st, &bodies, &crate::plain(targets), constructor.as_ref())?.is_empty() {
+                    return Ok(());
                 }
             }
             // A Join extrude to an object joins that object too (#6424): the tool and the body
