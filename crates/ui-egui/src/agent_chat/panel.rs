@@ -14,8 +14,34 @@ pub const MIN_WIDTH: f32 = 280.0;
 pub const MAX_WIDTH: f32 = 760.0;
 /// The folded panel's width.
 const STRIP: f32 = 30.0;
-/// The keyboard shortcut that shows and hides the panel (also from its own text field).
-pub const SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::A);
+/// Consume the configured toggle before CAD shortcuts, including in the chat's own window.
+/// Bare character keys remain text while a field owns the keyboard; chords still hide chat.
+pub fn toggle_shortcut(app: &mut SolveApp, ctx: &egui::Context) {
+    if !shown(app) || crate::keymap::capturing(app) {
+        return;
+    }
+    let keys = crate::keymap::keys(app, "ui.assistant");
+    let typing = ctx.egui_wants_keyboard_input();
+    let pressed = ctx.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            if let egui::Event::Key { key, modifiers, pressed: true, repeat, .. } = event {
+                if typing && !modifiers.command && !modifiers.ctrl && !modifiers.alt {
+                    return true;
+                }
+                if keys.contains(&crate::keymap::key_name(*key, *modifiers)) {
+                    pressed |= !repeat;
+                    return false;
+                }
+            }
+            true
+        });
+        pressed
+    });
+    if pressed {
+        toggle(app);
+    }
+}
 
 fn panel_id(left: bool) -> Id {
     Id::new(if left { "sc_agent_chat_left" } else { "sc_agent_chat_right" })
@@ -50,9 +76,31 @@ pub fn toggle(app: &mut SolveApp) {
 }
 
 /// The tooltip of the chat's buttons: its name and shortcut.
-pub fn tip() -> String {
-    let key = if cfg!(target_os = "macos") { "Cmd+Shift+A" } else { "Ctrl+Shift+A" };
-    format!("{} ({key})", tr("ui.agent_chat"))
+pub fn tip(app: &SolveApp) -> String {
+    match crate::keymap::display_for(app, "ui.assistant") {
+        Some(key) => format!("{} ({key})", tr("ui.agent_chat")),
+        None => tr("ui.agent_chat").to_string(),
+    }
+}
+
+/// Selectable transcript labels do not take egui keyboard focus. Keep their keys out of
+/// CAD until a pointer press outside the chat, not merely a move of the pointer. Use the
+/// panel in this window, never label selections belonging to another native viewport.
+/// Called before layout so even a click and a shortcut in the same frame are routed here.
+pub(crate) fn owns_keyboard_input(app: &mut SolveApp, ctx: &egui::Context) -> bool {
+    let rect = app.agent_chat.panel_rect.filter(|_| shown(app) && app.agent_chat.open && !app.preferences.agent_chat_minimized);
+    let Some(rect) = rect else {
+        app.agent_chat.keyboard_owned = false;
+        return false;
+    };
+    ctx.input(|input| {
+        for event in &input.events {
+            if let egui::Event::PointerButton { pos, pressed: true, .. } = event {
+                app.agent_chat.keyboard_owned = rect.contains(*pos);
+            }
+        }
+    });
+    app.agent_chat.keyboard_owned
 }
 
 /// The panel, when the chat is turned on and open. Call before the central viewport is laid out.
@@ -68,9 +116,6 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // With AI features off nothing of the chat is drawn, and the shortcut does nothing.
     if !shown(app) {
         return;
-    }
-    if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT)) {
-        toggle(app);
     }
     // A window that isn't drawn this frame closes; the next one opens at the saved place.
     if !(app.agent_chat.open && app.preferences.agent_chat_popped) {
@@ -531,6 +576,11 @@ fn window(app: &mut SolveApp, ctx: &egui::Context) {
     // The side panel isn't drawn: its place no longer counts as "in the chat".
     app.agent_chat.panel_rect = None;
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("sc_agent_chat_window"), builder, |ui, class| {
+        // Root/embedded inputs are handled by SolveApp::logic. A native chat window owns
+        // its input and must see the toggle before its text editor can consume the chord.
+        if class != egui::ViewportClass::EmbeddedWindow {
+            toggle_shortcut(app, ui.ctx());
+        }
         let t = Tokens::get();
         let frame = Container::new(ui.ctx(), Surface::Panel).edge_frame(t.dialog_body);
         let r = Container::new(ui.ctx(), Surface::Viewport).central().frame(frame).show(ui, |ui| ui_kit::scope(ui, |ui| body(app, ui, false)));
@@ -554,9 +604,6 @@ fn window(app: &mut SolveApp, ctx: &egui::Context) {
         }
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             drop_hint(&ctx, r.response.rect);
-        }
-        if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT)) {
-            toggle(app);
         }
         // The whole window is the chat, so New chat works anywhere in it.
         if ctx.input_mut(|i| i.consume_shortcut(&NEW_CHAT_SHORTCUT)) {
@@ -667,7 +714,7 @@ fn strip(app: &mut SolveApp, ui: &mut egui::Ui) {
         if app.preferences.agent_chat_side == "left" { [r.right_top(), r.right_bottom()] } else { [r.left_top(), r.left_bottom()] },
         t.primary_border(t.border),
     );
-    let tip = format!("{} · {}", tip(), state.label());
+    let tip = format!("{} · {}", tip(app), state.label());
     if resp.on_hover_text(tip).clicked() {
         app.preferences.agent_chat_minimized = false;
     }
@@ -1586,6 +1633,49 @@ fn auth_box(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The visible **Copy message** button of one transcript message (#10675): copies the whole
+/// message — the prompt as entered, or the assistant's original Markdown — and nothing else.
+/// A streaming reply copies the stable text received so far, which is what `text` holds.
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_message_button(ui: &mut egui::Ui, n: usize, text: &str) {
+    let b = ui_kit::button(ui, tr("ui.agent_chat_copy_message"), ui_kit::Button::Small);
+    crate::scenario::publish_handle(&format!("agent_chat:copy:{n}"), b.rect.center());
+    if b.clicked() {
+        ui.ctx().copy_text(text.to_owned());
+    }
+}
+
+/// The right-click menu of one transcript message (#10675): the same single action as the
+/// visible button, on the whole message area, beside the composer's own text menu.
+/// The area stays hover-only so partial text selection keeps working, so the menu opens on a
+/// right-click released over it rather than on a click the response itself would report.
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_message_menu(ui: &egui::Ui, response: &egui::Response, n: usize, text: &str) {
+    crate::scenario::publish_rect(&format!("agent_chat:msg:{n}"), response.rect);
+    let opened = ui
+        .input(|i| i.pointer.button_released(egui::PointerButton::Secondary) && i.pointer.interact_pos().is_some_and(|p| response.rect.contains(p)));
+    let mut copy = false;
+    Container::new(ui.ctx(), Surface::Popup)
+        .menu(response)
+        .at_pointer_fixed()
+        .frame(ui_kit::Menu::frame())
+        .open_memory(if opened { Some(egui::SetOpenCommand::Bool(true)) } else { None })
+        .show(|ui| {
+            ui_kit::Menu::show(ui, crate::context_menu::LIST_W, |ui| {
+                let item = ui_kit::MenuItem::new("copy_message", tr("ui.agent_chat_copy_message"), "copy");
+                let row = item.show(ui);
+                crate::scenario::publish_handle(&format!("agent_chat:copy_menu:{n}"), row.rect.center());
+                if row.clicked() {
+                    copy = true;
+                    ui.close();
+                }
+            });
+        });
+    if copy {
+        ui.ctx().copy_text(text.to_owned());
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
@@ -1599,6 +1689,9 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
     for (n, item) in app.agent_chat.items.iter().enumerate() {
         match item {
             Item::User { text, image, pictures, context, files } => {
+                // A picture-only prompt has no text to copy: no action rather than an empty copy (#10675).
+                let copyable = !text.is_empty();
+                let before = ui.cursor();
                 ui_kit::assistant_bubble(ui, |ui| {
                     if !text.is_empty() {
                         ui.add(egui::Label::new(RichText::new(text).color(t.text)).selectable(true).wrap());
@@ -1613,13 +1706,28 @@ fn conversation(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                     context_chips(ui, context, false);
                     files_line(ui, files.iter().map(String::as_str));
+                    if copyable {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| copy_message_button(ui, n, text));
+                    }
                 });
+                if copyable {
+                    let drawn = egui::Rect::from_x_y_ranges(before.x_range(), before.min.y..=ui.cursor().min.y);
+                    let resp = ui.interact(drawn, Id::new(("agent_chat_msg", n)), Sense::hover());
+                    copy_message_menu(ui, &resp, n, text);
+                }
             }
             Item::Agent { thought, text } => {
                 if *thought {
                     ui.add(egui::Label::new(RichText::new(text).italics().color(t.text_dim)).selectable(true).wrap());
                 } else {
+                    let before = ui.cursor();
                     ui_kit::assistant_prose(ui, |ui| super::markdown_view::show(ui, n, text));
+                    if !text.is_empty() {
+                        copy_message_button(ui, n, text);
+                        let drawn = egui::Rect::from_x_y_ranges(before.x_range(), before.min.y..=ui.cursor().min.y);
+                        let resp = ui.interact(drawn, Id::new(("agent_chat_msg", n)), Sense::hover());
+                        copy_message_menu(ui, &resp, n, text);
+                    }
                 }
             }
             Item::Tool { .. } => {
