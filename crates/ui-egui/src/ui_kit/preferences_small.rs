@@ -140,6 +140,10 @@ pub(crate) struct SettingsChip<'a> {
 
 /// Bounded informational pill; an optional removal target lives inside the same outline.
 pub(crate) fn settings_chip(ui: &mut Ui, label: &str, chip: SettingsChip<'_>) -> egui::Response {
+    crate::prefs_search::note_unlabelled(ui, &[label]);
+    if crate::prefs_search::querying(ui) && !crate::prefs_search::visible(ui, &[label]) {
+        return crate::prefs_search::hidden_response(ui);
+    }
     let t = Tokens::get();
     let ink = if chip.accent { t.selected_ink } else { t.form_dim };
     let font = if chip.accent {
@@ -155,6 +159,10 @@ pub(crate) fn settings_chip(ui: &mut Ui, label: &str, chip: SettingsChip<'_>) ->
     let natural = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), ink).size().x + t.space_16 + icon_width + remove_width;
     let height = if chip.compact { t.space_24 - t.space_2 } else { t.space_24 };
     let (rect, response) = ui.allocate_exact_size(vec2(natural.min(super::metrics::dimension(ui.max_rect().width())), height), Sense::hover());
+    if super::layout::label(ui).is_empty() {
+        crate::prefs_search::remember(ui, label, rect);
+        crate::prefs_search::follow(ui, label, rect);
+    }
     ui.painter().rect(
         rect,
         t.radius_xl,
@@ -188,12 +196,18 @@ pub(crate) fn settings_chip(ui: &mut Ui, label: &str, chip: SettingsChip<'_>) ->
 
 /// A labelled form block whose control column can contain several natural-height rows.
 pub(crate) fn settings_block<R>(ui: &mut Ui, label: &str, label_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    settings_block_content(ui, label, None, label_width, add)
+    settings_block_hint(ui, label, None, label_width, add)
 }
 
 /// A form block whose explanatory hint belongs below its label, beside the controls.
-pub(crate) fn settings_block_hint<R>(ui: &mut Ui, label: &str, hint: &str, label_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    settings_block_content(ui, label, Some(hint), label_width, add)
+pub(crate) fn settings_block_hint<'a, R>(
+    ui: &mut Ui,
+    label: &str,
+    hint: impl Into<Option<&'a str>>,
+    label_width: f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    settings_block_content(ui, label, hint.into(), label_width, add)
 }
 
 fn settings_block_content<R>(ui: &mut Ui, label: &str, hint: Option<&str>, label_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
