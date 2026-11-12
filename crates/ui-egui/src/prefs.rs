@@ -1050,7 +1050,7 @@ preference_settings! {
     /// Share shading and Continuity; false preserves their independent legacy behavior.
     single_surface_analysis: bool = true, PAGE_GRAPHICS => check_id("prefs.graphics_page.single_surface_analysis");
     /// Linux: the window system the app opens with at its next start (#3083): `auto` (XWayland
-    /// whenever there is an X display, native Wayland on niri), `wayland` or `x11`.
+    /// whenever there is an X display, native Wayland on niri and Hyprland), `wayland` or `x11`.
     window_system: String = "auto".into(), PAGE_GRAPHICS;
     /// Graphics API for the next start; Automatic preserves the platform startup order.
     graphics_backend: String = "auto".into(), PAGE_GRAPHICS;
@@ -1112,6 +1112,14 @@ preference_settings! {
     frame_rate_details: bool = false, PAGE_GRAPHICS;
     /// Draw a wider rim under finished sketch curves to improve contrast on shaded faces.
     sketch_halo: bool = false, PAGE_GRAPHICS => check("Halo under sketch curves");
+    /// How joints look in the viewport: 0 the ring and axis drawn before badges, or a badge with
+    /// the joint type's pictogram: 1 white on dark, 2 solid accent, 3 solid amber, 4 outline,
+    /// 5 a colour and outline for each family of types, 6 dots (`joint_symbols::STYLES`).
+    joint_symbols: u8 = 0, PAGE_GRAPHICS, accept(0..=6);
+    /// Joint badges draw quiet unless the joint lets its parts move, which shows what a
+    /// construction has fully constrained. Off: every joint draws alike. The ring and axis
+    /// style draws every joint alike either way.
+    highlight_moving_joints: bool = true, PAGE_GRAPHICS => check_id("prefs.highlight_moving_joints");
     /// Show the view's pitch, yaw and roll and its projection under the orientation gizmo (#6032).
     /// Off by default; View ▸ View angles and `view.angle_readout` turn it on.
     show_view_angles: bool = false, PAGE_GRAPHICS;
@@ -1149,6 +1157,10 @@ preference_settings! {
     /// a double-click in the browser activates every component and one in the view does nothing,
     /// as before.
     double_click_components: bool = true, PAGE_DESIGN => check_id("settings.double_click_components");
+    /// Snap points (#5912): wherever a point is picked (Move, Align and Measure so far, #5881),
+    /// hovering an edge, face or sketch curve shows its centre, middle and end points to snap to. On by default; off, a pick takes only
+    /// what is under the pointer, as before.
+    snap_points: bool = true, PAGE_TOOLS => check_id("settings.snap_points");
     /// Insert Design lists the designs open in other tabs, each inserted with one click, then
     /// Browse… for a file (#8570). Off: it opens the file picker at once, as before.
     insert_lists_open_designs: bool = true, PAGE_DESIGN => check_id("settings.insert_lists_open_designs");
@@ -1157,6 +1169,9 @@ preference_settings! {
     /// #13262). Off: the grabbed point goes to the pointer and the part may spin about it, as
     /// before.
     joint_drag_trackball: bool = true, PAGE_DESIGN => check_id("prefs.joint_drag_trackball");
+    /// A saved design's tab and its Browser top row are named after its file, so a Save As or a
+    /// renamed file shows (#7267). Off: both show the name stored in the design, as before.
+    names_from_file: bool = true, PAGE_DESIGN => check_id("settings.names_from_file");
     /// Reopen the saved designs that were open when the app was last closed (#5542).
     reopen_designs: bool = true, PAGE_GENERAL;
     /// Ask separately when closing several unsaved designs, as before grouped saving.
@@ -1372,6 +1387,8 @@ preference_settings! {
     zoom_stop_at_model: bool = false, PAGE_NAVIGATION => check_id("prefs.zoom_stop_at_model");
     /// Spread discrete wheel input across frames (off: apply each event immediately).
     smooth_wheel_zoom: bool = true, PAGE_NAVIGATION => check("Smooth wheel zoom", "Turn off to apply each wheel event immediately, without a smoothing tail");
+    /// The face under the pointer keeps its highlight while the view moves under it (#2130).
+    keep_hover_while_navigating: bool = true, PAGE_NAVIGATION;
     /// Two-finger trackpad scroll pans (off: it zooms like the wheel); pinch always zooms.
     trackpad_pan: bool = true, PAGE_NAVIGATION;
     /// Hold this modifier alone to zoom with vertical wheel or two-finger scroll.
@@ -1489,6 +1506,9 @@ preference_settings! {
     view_dxf_dashed: bool = false;
     /// Model-space chord tolerance for current-view DXF curves, in millimetres.
     view_dxf_tolerance: f64 = 0.01;
+    /// Where the current-view DXF drawing puts its 0,0: "target" (the point the camera looks
+    /// at) or "origin" (the model's origin as seen from the camera).
+    view_dxf_zero: String = "target".into();
     /// Send to Slicer: the last slicer used (an installed slicer's id or a program path).
     send_slicer: String = String::new();
     /// Slicers that can load a file into the window that is already open do so (default on).
@@ -1499,6 +1519,10 @@ preference_settings! {
     /// How strongly a print face stands out in the viewport (#8429): the share of the section
     /// colour in its tint, 0 to 1; its outline follows. 0 draws no highlight.
     print_face_highlight: f32 = 0.2, PAGE_GENERAL, accept(0.0..=1.0);
+    /// Print faces show in the view at all times and are saved in the design, as before #11512.
+    /// Off (the default): they show only while the Send to Slicer window is open, a save leaves
+    /// them out, and a design that has them opens without them.
+    keep_print_faces: bool = false, PAGE_GENERAL;
     /// The line about sending again replacing the slicer's file has been shown.
     slicer_resend_hint_seen: bool = false;
     /// The user has agreed to Open with EasyPrint uploading a model to Printables' servers.
@@ -1513,9 +1537,9 @@ preference_settings! {
     /// The Assistant button in the application bar (the shortcut and View menu entry stay).
     ai_toolbar_button: bool = true, PAGE_ASSISTANT;
     /// An agent's slow commands over the control channel (MCP) compute off the window thread,
-    /// so the window stays live while they run (#1989, [`crate::control_job`]). Off: they run on
-    /// the window thread, and the window waits for each, as before (the default).
-    agent_off_thread: bool = false, PAGE_ASSISTANT;
+    /// so the window stays live while they run (#1989, [`crate::control_job`]), the default. Off:
+    /// they run on the window thread, and the window waits for each.
+    agent_off_thread: bool = true, PAGE_ASSISTANT;
     /// Let AI agents connect: the localhost control channel (MCP) listens on
     /// `agent_control_port`, unless `--control`/`SOLIDCRAFT_CONTROL_PORT` name one for the run.
     /// Turning it on or off, or changing the port, takes effect at once ([`crate::control_switch`]).
@@ -2296,6 +2320,7 @@ pub fn apply(app: &mut SolveApp, ctx: &egui::Context) {
     apply_network(&app.preferences);
     // The features computed from now on are checked as the preference says.
     app.session.set_validation(app.preferences.validation);
+    crate::print_face_ui::sync(&mut app.session, &app.preferences);
     // The profiler records while the preference is on (switched when it changes; at start-up only
     // when on, so SOLIDCRAFT_PROFILE=1 is not undone by the default).
     let profile = app.preferences.profile_operations;
@@ -4264,6 +4289,9 @@ fn prepare_preferences(
     }
     if !accepted::print_face_highlight(&new) {
         return Err("`print_face_highlight` must be 0…1".into());
+    }
+    if !accepted::joint_symbols(&new) {
+        return Err("`joint_symbols` must be 0 (ring and axis), 1 (white on dark), 2 (solid accent), 3 (solid amber), 4 (outline), 5 (colour by type) or 6 (dots)".into());
     }
     if !accepted::home_fit_size(&new) {
         return Err("`home_fit_size` must be 0.1…1".into());
@@ -6614,6 +6642,7 @@ mod tests {
             ("space_mouse_speed", json!(2.0), PAGE_MOUSE3D),
             ("nav", json!("blender"), PAGE_NAVIGATION),
             ("look_at_anim", json!(false), PAGE_NAVIGATION),
+            ("keep_hover_while_navigating", json!(false), PAGE_NAVIGATION),
             ("selection_shift_add_only", json!(true), PAGE_SKETCH),
             ("select_other_hidden", json!(false), PAGE_SKETCH),
             ("select_hidden_edges", json!(true), PAGE_SKETCH),
@@ -6759,6 +6788,7 @@ mod tests {
             ("Fold items", PAGE_GRAPHICS),
             ("Allow network locations in designs", PAGE_GENERAL),
             ("Print face highlight", PAGE_GENERAL),
+            ("Keep print faces", PAGE_GENERAL),
         ];
         let mut found = vec![Vec::new(); cases.len()];
         let mut h = crate::scenario::Harness::new();
@@ -9019,6 +9049,19 @@ mod tests {
     }
 
     #[test]
+    fn joint_symbols_default_to_the_ring_and_axis_and_badges_highlight_moving_joints() {
+        use serde_json::json;
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        assert_eq!((app.preferences.joint_symbols, app.preferences.highlight_moving_joints), (crate::joint_symbols::RING_AND_AXIS, true));
+        let saved = super::set(&mut app, &json!({"joint_symbols": 6, "highlight_moving_joints": false})).unwrap();
+        assert_eq!((saved["joint_symbols"].as_u64(), saved["highlight_moving_joints"].as_bool()), (Some(6), Some(false)));
+        assert!(super::set(&mut app, &json!({"joint_symbols": 7})).unwrap_err().contains("joint_symbols"));
+        assert_eq!(app.preferences.joint_symbols, 6);
+        super::defaults(&mut app, super::PAGE_GRAPHICS);
+        assert_eq!((app.preferences.joint_symbols, app.preferences.highlight_moving_joints), (crate::joint_symbols::RING_AND_AXIS, true));
+    }
+
+    #[test]
     fn sketch_halo_is_off_by_default_saved_and_restored() {
         use serde_json::json;
         let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
@@ -10501,6 +10544,20 @@ mod tests {
         assert!(h.app.preferences.orbit_cursor_wrap);
         h.call("ui.prefs", json!({"orbit_cursor_wrap":false,"button":"apply"}));
         assert!(!h.app.preferences.orbit_cursor_wrap);
+    }
+
+    /// An agent's slow commands compute off the window thread unless a person turned that off:
+    /// a settings file without the setting follows the default, one that has it keeps its value.
+    #[test]
+    fn agent_commands_compute_off_the_window_thread_by_default() {
+        assert!(Prefs::default().agent_off_thread);
+        let old: Prefs = serde_json::from_value(json!({"nav": "solidworks"})).unwrap();
+        assert!(old.agent_off_thread, "a file from before the setting follows the default");
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.agent_off_thread = false;
+        let mut restored = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        restored.load_prefs(&h.app.prefs());
+        assert!(!restored.preferences.agent_off_thread, "a saved off stays off");
     }
 
     #[test]
@@ -12701,6 +12758,7 @@ mod settings_search_tests {
             ("allow network locations", "Allow network locations in designs"),
             ("slicer that is already running", "Open files in a slicer that is already running"),
             ("print face highlight", "Print face highlight"),
+            ("keep print faces", "Keep print faces"),
             ("interface language", "Interface language"),
         ] {
             h.app.prefs_window.shell.filter = query.into();
@@ -13071,6 +13129,28 @@ mod settings_search_tests {
         h.app.prefs_window.shell.filter = "zzzz-no-setting".into();
         h.frames(4);
         assert!(!drawn(&h, "Status bar"), "a miss shows nothing");
+    }
+
+    /// The Placed features row is found by the name of every feature that has the marker, not
+    /// only by its own label.
+    #[test]
+    fn preferences_search_finds_placement_handles_by_each_placed_feature() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        crate::prefs::open_at(&mut h.app, crate::prefs::PAGE_TOOLS);
+        h.frames(2);
+        let drawn = |h: &crate::scenario::Harness, label: &str| {
+            let body = crate::scenario::rect_of("dialog:page_body");
+            h.widget(label).is_some_and(|[x, y]| body.is_none_or(|body| body.contains(egui::pos2(x as f32, y as f32))))
+        };
+        for query in ["Placed features", "Rest", "Boss", "Snap Fit", "Box", "Cylinder", "Cone", "Sphere", "Torus", "Coil"] {
+            h.app.prefs_window.shell.filter = query.into();
+            h.frames(4);
+            assert!(drawn(&h, "Placement handles"), "searching '{query}' should show Placement handles");
+        }
+        h.app.prefs_window.shell.filter = "zzzz-no-setting".into();
+        h.frames(4);
+        assert!(!drawn(&h, "Placement handles"), "a miss shows nothing");
     }
 
     #[test]
